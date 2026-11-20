@@ -1,0 +1,167 @@
+erDiagram
+    MUNICIPIO ||--o{ ALOJAMIENTO : "municipio_id"
+    TIPO_ALOJAMIENTO ||--o{ ALOJAMIENTO : "tipo_alojamiento_id"
+    ALOJAMIENTO ||--|{ HABITACION : "alojamiento_id"
+    HABITACION ||--|{ TARIFA : "habitacion_id"
+    TEMPORADA ||--o{ TARIFA : "temporada_id"
+    CLIENTE ||--o{ RESERVA : "cliente_id"
+    RESERVA ||--|{ RESERVA_HABITACION : "reserva_id"
+    HABITACION ||--o{ RESERVA_HABITACION : "habitacion_id"
+    RESERVA ||--o{ PAGO : "reserva_id"
+    ALOJAMIENTO ||--o{ SERVICIO : "alojamiento_id"
+    RESERVA ||--o{ RESERVA_SERVICIO : "reserva_id"
+    SERVICIO ||--o{ RESERVA_SERVICIO : "servicio_id"
+    RESERVA ||--o| RESENA : "reserva_id"
+    CLIENTE ||--o{ RESENA : "cliente_id"
+    ALOJAMIENTO ||--o{ RESENA : "alojamiento_id"
+    ROL ||--o{ USUARIO_SISTEMA : "rol_id"
+    USUARIO_SISTEMA ||--o{ USUARIO_ALOJAMIENTO : "usuario_id"
+    ALOJAMIENTO ||--o{ USUARIO_ALOJAMIENTO : "alojamiento_id"
+    ALOJAMIENTO ||--o{ LIQUIDACION_MENSUAL : "alojamiento_id"
+    MUNICIPIO {
+        NUMBER municipio_id PK
+        VARCHAR2 nombre UK
+    }
+    TIPO_ALOJAMIENTO {
+        NUMBER tipo_alojamiento_id PK
+        VARCHAR2 nombre UK
+    }
+    ALOJAMIENTO {
+        NUMBER alojamiento_id PK
+        NUMBER municipio_id FK
+        NUMBER tipo_alojamiento_id FK
+        VARCHAR2 nombre_comercial
+        VARCHAR2 direccion
+        NUMBER calificacion_estrellas
+        VARCHAR2 telefono
+        VARCHAR2 correo
+    }
+    HABITACION {
+        NUMBER habitacion_id PK
+        NUMBER alojamiento_id FK "UK con numero"
+        VARCHAR2 numero
+        NUMBER capacidad_maxima
+        VARCHAR2 tipo_habitacion
+        VARCHAR2 descripcion
+    }
+    TEMPORADA {
+        NUMBER temporada_id PK
+        VARCHAR2 nombre "UK con anio"
+        VARCHAR2 categoria
+        NUMBER anio
+        DATE fecha_inicio
+        DATE fecha_fin
+    }
+    TARIFA {
+        NUMBER habitacion_id PK,FK
+        NUMBER temporada_id PK,FK
+        NUMBER precio_noche
+    }
+    CLIENTE {
+        NUMBER cliente_id PK
+        VARCHAR2 nombre
+        VARCHAR2 documento_identidad UK
+        VARCHAR2 correo UK
+        VARCHAR2 telefono
+        VARCHAR2 ciudad_origen
+    }
+    RESERVA {
+        NUMBER reserva_id PK
+        NUMBER cliente_id FK
+        DATE fecha_checkin
+        DATE fecha_checkout
+        DATE fecha_reserva
+        VARCHAR2 estado
+        DATE fecha_cancelacion
+    }
+    RESERVA_HABITACION {
+        NUMBER reserva_habitacion_id PK
+        NUMBER reserva_id FK
+        NUMBER habitacion_id FK
+        DATE fecha_checkin
+        DATE fecha_checkout
+        NUMBER num_huespedes
+    }
+    PAGO {
+        NUMBER pago_id PK
+        NUMBER reserva_id FK
+        DATE fecha_pago
+        NUMBER monto
+        VARCHAR2 metodo
+        VARCHAR2 estado
+    }
+    SERVICIO {
+        NUMBER servicio_id PK
+        NUMBER alojamiento_id FK
+        VARCHAR2 nombre
+        VARCHAR2 descripcion
+        NUMBER precio
+    }
+    RESERVA_SERVICIO {
+        NUMBER reserva_servicio_id PK
+        NUMBER reserva_id FK
+        NUMBER servicio_id FK
+        NUMBER cantidad
+    }
+    RESENA {
+        NUMBER resena_id PK
+        NUMBER cliente_id FK
+        NUMBER alojamiento_id FK
+        NUMBER reserva_id FK,UK
+        NUMBER calificacion
+        VARCHAR2 comentario
+        DATE fecha
+    }
+    ROL {
+        NUMBER rol_id PK
+        VARCHAR2 nombre UK
+    }
+    USUARIO_SISTEMA {
+        NUMBER usuario_id PK
+        NUMBER rol_id FK
+        VARCHAR2 nombre
+        VARCHAR2 correo UK
+        VARCHAR2 clave_hash
+        VARCHAR2 usuario_bd UK
+    }
+    USUARIO_ALOJAMIENTO {
+        NUMBER usuario_id PK,FK
+        NUMBER alojamiento_id PK,FK
+    }
+    LIQUIDACION_MENSUAL {
+        NUMBER liquidacion_id PK
+        NUMBER alojamiento_id FK "UK con anio, mes"
+        NUMBER anio
+        NUMBER mes
+        NUMBER noches_vendidas
+        NUMBER valor_bruto
+        NUMBER valor_comision
+        NUMBER valor_neto
+    }
+    AUDITORIA_TARIFA {
+        NUMBER auditoria_id PK
+        NUMBER id_sentencia
+        VARCHAR2 operacion
+        NUMBER habitacion_id
+        NUMBER temporada_id
+        NUMBER precio_anterior
+        NUMBER precio_nuevo
+        VARCHAR2 usuario_bd
+        TIMESTAMP fecha_hora
+    }
+    RESERVA_HISTORICO {
+        NUMBER reserva_id PK
+        NUMBER cliente_id
+        NUMBER alojamiento_id
+        DATE fecha_checkin
+        DATE fecha_checkout
+        VARCHAR2 estado
+        NUMBER total_pagado
+        DATE fecha_archivo
+    }
+    CALENDARIO {
+        DATE fecha PK
+        NUMBER anio
+        NUMBER mes
+        NUMBER dia
+    }

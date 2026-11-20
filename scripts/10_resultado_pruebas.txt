@@ -1,0 +1,1873 @@
+SQL> SET FEEDBACK ON;
+SQL> SET LINESIZE 220;
+SQL> SET PAGESIZE 200;
+SQL> ALTER SESSION SET NLS_DATE_FORMAT = 'DD/MM/YYYY';
+
+Session alterado.
+
+SQL> 
+SQL> SELECT USER AS usuario, SYSDATE AS fecha_ejecucion FROM dual;
+
+USUARIO                                                                                                                          FECHA_EJEC
+-------------------------------------------------------------------------------------------------------------------------------- ----------
+TURISMOUQ                                                                                                                        20/11/2026
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> -- ============================================================================
+SQL> -- ESTADO INICIAL (para comprobar al final que la base quedo igual)
+SQL> -- ============================================================================
+SQL> VARIABLE ini_tarifas  NUMBER
+SQL> VARIABLE ini_reservas NUMBER
+SQL> VARIABLE ini_lineas   NUMBER
+SQL> VARIABLE ini_pagos    NUMBER
+SQL> VARIABLE ini_clientes NUMBER
+SQL> VARIABLE cli          NUMBER
+SQL> 
+SQL> BEGIN
+  2      -- restos de una corrida anterior que se hubiera interrumpido
+  3      DELETE FROM PAGO WHERE reserva_id IN (SELECT reserva_id FROM RESERVA WHERE cliente_id IN
+  4          (SELECT cliente_id FROM CLIENTE WHERE documento_identidad = 'PRUEBAS-10'));
+  5      DELETE FROM RESERVA_HABITACION WHERE reserva_id IN (SELECT reserva_id FROM RESERVA WHERE cliente_id IN
+  6          (SELECT cliente_id FROM CLIENTE WHERE documento_identidad = 'PRUEBAS-10'));
+  7      DELETE FROM RESERVA WHERE cliente_id IN
+  8          (SELECT cliente_id FROM CLIENTE WHERE documento_identidad = 'PRUEBAS-10');
+  9      DELETE FROM CLIENTE WHERE documento_identidad = 'PRUEBAS-10';
+ 10      COMMIT;
+ 11  
+ 12      SELECT SUM(precio_noche) INTO :ini_tarifas  FROM TARIFA;
+ 13      SELECT COUNT(*)          INTO :ini_reservas FROM RESERVA;
+ 14      SELECT COUNT(*)          INTO :ini_lineas   FROM RESERVA_HABITACION;
+ 15      SELECT COUNT(*)          INTO :ini_pagos    FROM PAGO;
+ 16      SELECT COUNT(*)          INTO :ini_clientes FROM CLIENTE;
+ 17  
+ 18      -- cliente propio de las pruebas: todo lo que se cree queda a su nombre
+ 19      INSERT INTO CLIENTE (nombre, documento_identidad, correo, ciudad_origen)
+ 20      VALUES ('Cliente de pruebas', 'PRUEBAS-10', 'pruebas10@turismouq.co', 'Armenia')
+ 21      RETURNING cliente_id INTO :cli;
+ 22      COMMIT;
+ 23      DBMS_OUTPUT.PUT_LINE('Estado inicial: suma tarifas=' || :ini_tarifas || '  reservas=' || :ini_reservas ||
+ 24          '  lineas=' || :ini_lineas || '  pagos=' || :ini_pagos || '  clientes=' || :ini_clientes);
+ 25      DBMS_OUTPUT.PUT_LINE('Cliente de pruebas: ' || :cli);
+ 26  END;
+ 27  /
+Estado inicial: suma tarifas=5585097000  reservas=25000  lineas=29973  pagos=33961  clientes=3001
+Cliente de pruebas: 3003
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P0. CORRECCIONES DE LA ENTREGA 1
+SQL> -- ============================================================================
+SQL> PROMPT ===== P0.1 Volumenes (RESERVA_SERVICIO debe ser >= 40.000) =====
+===== P0.1 Volumenes (RESERVA_SERVICIO debe ser >= 40.000) =====
+SQL> SELECT 'TEMPORADA' tabla, COUNT(*) filas FROM TEMPORADA
+  2  UNION ALL SELECT 'TARIFA', COUNT(*) FROM TARIFA
+  3  UNION ALL SELECT 'RESERVA', COUNT(*) FROM RESERVA
+  4  UNION ALL SELECT 'RESERVA_HABITACION', COUNT(*) FROM RESERVA_HABITACION
+  5  UNION ALL SELECT 'PAGO', COUNT(*) FROM PAGO
+  6  UNION ALL SELECT 'SERVICIO', COUNT(*) FROM SERVICIO
+  7  UNION ALL SELECT 'RESERVA_SERVICIO', COUNT(*) FROM RESERVA_SERVICIO;
+
+TABLA                   FILAS
+------------------ ----------
+TEMPORADA                  40
+TARIFA                  35320
+RESERVA                 25000
+RESERVA_HABITACION      29973
+PAGO                    33961
+SERVICIO                  258
+RESERVA_SERVICIO        48181
+
+7 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P0.2 Temporadas por anio y dias sin temporada / con cruce (deben ser 0) =====
+===== P0.2 Temporadas por anio y dias sin temporada / con cruce (deben ser 0) =====
+SQL> SELECT anio, COUNT(*) AS temporadas, MIN(fecha_inicio) AS desde, MAX(fecha_fin) AS hasta,
+  2         SUM(fecha_fin - fecha_inicio + 1) AS dias_cubiertos
+  3  FROM   TEMPORADA GROUP BY anio ORDER BY anio;
+
+      ANIO TEMPORADAS DESDE      HASTA      DIAS_CUBIERTOS
+---------- ---------- ---------- ---------- --------------
+      2024         10 01/01/2024 31/12/2024            366
+      2025         10 01/01/2025 31/12/2025            365
+      2026         10 01/01/2026 31/12/2026            365
+      2027         10 01/01/2027 31/12/2027            365
+
+4 filas seleccionadas. 
+
+SQL> 
+SQL> SELECT SUM(CASE WHEN n = 0 THEN 1 ELSE 0 END) AS dias_sin_temporada,
+  2         SUM(CASE WHEN n > 1 THEN 1 ELSE 0 END) AS dias_con_cruce
+  3  FROM  (SELECT c.fecha, COUNT(t.temporada_id) AS n
+  4         FROM   CALENDARIO c
+  5         LEFT JOIN TEMPORADA t ON c.fecha BETWEEN t.fecha_inicio AND t.fecha_fin
+  6         GROUP BY c.fecha);
+
+DIAS_SIN_TEMPORADA DIAS_CON_CRUCE
+------------------ --------------
+                 0              0
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P0.3 Solapes de habitacion en los datos (debe ser 0) =====
+===== P0.3 Solapes de habitacion en los datos (debe ser 0) =====
+SQL> SELECT COUNT(*) AS solapes_habitacion
+  2  FROM   RESERVA_HABITACION a
+  3  JOIN   RESERVA_HABITACION b
+  4         ON  a.habitacion_id = b.habitacion_id
+  5         AND a.reserva_habitacion_id < b.reserva_habitacion_id
+  6         AND a.fecha_checkin  < b.fecha_checkout
+  7         AND b.fecha_checkin  < a.fecha_checkout;
+
+SOLAPES_HABITACION
+------------------
+                 0
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P0.4 UNIQUE en CLIENTE.correo (debe rechazar el duplicado) =====
+===== P0.4 UNIQUE en CLIENTE.correo (debe rechazar el duplicado) =====
+SQL> BEGIN
+  2      INSERT INTO CLIENTE (nombre, documento_identidad, correo)
+  3      VALUES ('Cliente Duplicado', 'DOC-PRUEBA-UQ', 'cliente1@correo.com');
+  4      DBMS_OUTPUT.PUT_LINE('FALLO: se acepto un correo repetido');
+  5      ROLLBACK;
+  6  EXCEPTION
+  7      WHEN DUP_VAL_ON_INDEX THEN
+  8          DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  9  END;
+ 10  /
+OK  -> ORA-00001: Se ha violado la restricción única (TURISMOUQ.UQ_CLIENTE_CORREO) para la tabla TURISMOUQ.CLIENTE en las columnas (CORREO)
+ORA-03301: (Detalles de ORA-00001) ya existe la fila con los valores de columna (CORREO:'cliente1@correo.com')
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P0.5 Montos de PAGO salen de TARIFA (diferencias debe ser 0) =====
+===== P0.5 Montos de PAGO salen de TARIFA (diferencias debe ser 0) =====
+SQL> -- En reservas no canceladas, la suma de sus pagos = estadia noche a noche + servicios
+SQL> SELECT COUNT(*) AS reservas_revisadas,
+  2         SUM(CASE WHEN ABS(pagado - calculado) > 0.01 THEN 1 ELSE 0 END) AS diferencias
+  3  FROM  (SELECT r.reserva_id,
+  4                (SELECT SUM(p.monto) FROM PAGO p WHERE p.reserva_id = r.reserva_id) AS pagado,
+  5                pkg_turismo.fn_valor_reserva(r.reserva_id) AS calculado
+  6         FROM   RESERVA r
+  7         WHERE  r.estado <> 'CANCELADA'
+  8         AND    MOD(r.reserva_id, 10) = 0
+  9         AND    EXISTS (SELECT 1 FROM PAGO p WHERE p.reserva_id = r.reserva_id));
+
+RESERVAS_REVISADAS DIFERENCIAS
+------------------ -----------
+              1968           0
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P0.6 La C2 ya no descarta ingresos (las dos columnas deben ser iguales) =====
+===== P0.6 La C2 ya no descarta ingresos (las dos columnas deben ser iguales) =====
+SQL> SELECT (SELECT SUM(CASE estado WHEN 'EXITOSO' THEN monto ELSE -monto END)
+  2          FROM   PAGO WHERE estado IN ('EXITOSO', 'REEMBOLSADO'))   AS ingreso_neto_total,
+  3         (SELECT SUM(CASE p.estado WHEN 'EXITOSO' THEN p.monto ELSE -p.monto END)
+  4          FROM   PAGO p
+  5          JOIN   RESERVA r   ON r.reserva_id = p.reserva_id
+  6          JOIN   TEMPORADA t ON r.fecha_checkin BETWEEN t.fecha_inicio AND t.fecha_fin
+  7          WHERE  p.estado IN ('EXITOSO', 'REEMBOLSADO'))           AS ingreso_con_temporada
+  8  FROM dual;
+
+INGRESO_NETO_TOTAL INGRESO_CON_TEMPORADA
+------------------ ---------------------
+        1.6892E+10            1.6892E+10
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P0.7 Regla de reembolso en los datos (diferencias debe ser 0) =====
+===== P0.7 Regla de reembolso en los datos (diferencias debe ser 0) =====
+SQL> -- Canceladas con mas de 5 dias: reembolso = 80 % del anticipo exitoso.
+SQL> -- Canceladas con 5 dias o menos: ningun reembolso.
+SQL> SELECT CASE WHEN r.fecha_checkin - r.fecha_cancelacion > 5 THEN 'mas de 5 dias' ELSE '5 dias o menos' END AS anticipacion,
+  2         COUNT(*) AS canceladas,
+  3         SUM(CASE WHEN NVL(x.reembolsado, 0) <> CASE WHEN r.fecha_checkin - r.fecha_cancelacion > 5
+  4                                                     THEN ROUND(NVL(x.exitoso, 0) * 0.8) ELSE 0 END
+  5                  THEN 1 ELSE 0 END) AS diferencias
+  6  FROM   RESERVA r
+  7  LEFT JOIN (SELECT reserva_id,
+  8                    SUM(CASE WHEN estado = 'EXITOSO'     THEN monto END) AS exitoso,
+  9                    SUM(CASE WHEN estado = 'REEMBOLSADO' THEN monto END) AS reembolsado
+ 10               FROM PAGO GROUP BY reserva_id) x ON x.reserva_id = r.reserva_id
+ 11  WHERE  r.estado = 'CANCELADA'
+ 12  AND    r.cliente_id <> :cli
+ 13  GROUP BY CASE WHEN r.fecha_checkin - r.fecha_cancelacion > 5 THEN 'mas de 5 dias' ELSE '5 dias o menos' END;
+
+ANTICIPACION   CANCELADAS DIFERENCIAS
+-------------- ---------- -----------
+mas de 5 dias        3960           0
+5 dias o menos       1258           0
+
+2 filas seleccionadas. 
+
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P1. fn_valor_estadia
+SQL> -- ============================================================================
+SQL> VARIABLE hab NUMBER
+SQL> EXEC SELECT MIN(habitacion_id) INTO :hab FROM HABITACION;
+Procedimiento PL/SQL terminado correctamente.
+SQL> PRINT hab
+
+       HAB
+----------
+         1
+
+SQL> 
+SQL> PROMPT ===== P1.1 Detalle noche a noche de una estadia que cruza dos temporadas =====
+===== P1.1 Detalle noche a noche de una estadia que cruza dos temporadas =====
+SQL> PROMPT        28/11/2026 -> 03/12/2026: 3 noches en Temporada media III y 2 en Fin de ano
+28/11/2026 -> 03/12/2026: 3 noches en Temporada media III y 2 en Fin de ano
+SQL> SELECT n.noche, t.nombre || ' ' || t.anio AS temporada, t.categoria, ta.precio_noche
+  2  FROM  (SELECT DATE '2026-11-28' + LEVEL - 1 AS noche FROM dual
+  3         CONNECT BY LEVEL <= DATE '2026-12-03' - DATE '2026-11-28') n
+  4  JOIN   TEMPORADA t ON n.noche BETWEEN t.fecha_inicio AND t.fecha_fin
+  5  JOIN   TARIFA ta   ON ta.temporada_id = t.temporada_id AND ta.habitacion_id = :hab
+  6  ORDER BY n.noche;
+
+NOCHE      TEMPORADA                                                                                                                                     CATEGORIA  PRECIO_NOCHE
+---------- --------------------------------------------------------------------------------------------------------------------------------------------- ---------- ------------
+28/11/2026 Temporada media III 2026                                                                                                                      MEDIA            179000
+29/11/2026 Temporada media III 2026                                                                                                                      MEDIA            179000
+30/11/2026 Temporada media III 2026                                                                                                                      MEDIA            179000
+01/12/2026 Fin de ano 2026                                                                                                                               ALTA             168000
+02/12/2026 Fin de ano 2026                                                                                                                               ALTA             168000
+
+5 filas seleccionadas. 
+
+SQL> 
+SQL> SELECT pkg_turismo.fn_valor_estadia(:hab, DATE '2026-11-28', DATE '2026-12-03') AS valor_funcion
+  2  FROM dual;
+
+VALOR_FUNCION
+-------------
+       873000
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P1.2 Casos: el valor de la funcion contra un calculo independiente en SQL =====
+===== P1.2 Casos: el valor de la funcion contra un calculo independiente en SQL =====
+SQL> DECLARE
+  2      v_hab NUMBER := :hab;
+  3  
+  4      PROCEDURE probar(p_desc VARCHAR2, p_in DATE, p_out DATE) IS
+  5          v_esperado NUMBER;
+  6          v_noches   NUMBER;
+  7          v_temps    NUMBER;
+  8          v_calc     NUMBER;
+  9      BEGIN
+ 10          -- calculo independiente: una fila por noche, unida a su temporada y tarifa
+ 11          SELECT SUM(ta.precio_noche), COUNT(*), COUNT(DISTINCT t.temporada_id)
+ 12            INTO v_esperado, v_noches, v_temps
+ 13            FROM (SELECT p_in + LEVEL - 1 AS noche FROM dual
+ 14                  CONNECT BY LEVEL <= p_out - p_in) n
+ 15            JOIN TEMPORADA t ON n.noche BETWEEN t.fecha_inicio AND t.fecha_fin
+ 16            JOIN TARIFA ta   ON ta.temporada_id = t.temporada_id AND ta.habitacion_id = v_hab;
+ 17  
+ 18          v_calc := pkg_turismo.fn_valor_estadia(v_hab, p_in, p_out);
+ 19  
+ 20          DBMS_OUTPUT.PUT_LINE(RPAD(p_desc, 48) || ' noches=' || LPAD(v_noches, 3) ||
+ 21              ' temporadas=' || v_temps || ' esperado=' || LPAD(v_esperado, 10) ||
+ 22              ' funcion=' || LPAD(v_calc, 10) ||
+ 23              CASE WHEN v_esperado = v_calc THEN '   OK' ELSE '   FALLO' END);
+ 24      END;
+ 25  BEGIN
+ 26      probar('Una temporada (05/10/2026-08/10/2026)',      DATE '2026-10-05', DATE '2026-10-08');
+ 27      probar('Dos temporadas (28/11/2026-03/12/2026)',     DATE '2026-11-28', DATE '2026-12-03');
+ 28      probar('Tres temporadas, S. Santa (27/03-08/04/26)', DATE '2026-03-27', DATE '2026-04-08');
+ 29      probar('Cambio de anio (29/12/2026-03/01/2027)',     DATE '2026-12-29', DATE '2027-01-03');
+ 30      probar('Una sola noche (24/12/2025-25/12/2025)',     DATE '2025-12-24', DATE '2025-12-25');
+ 31      probar('Cuatro temporadas (01/06/2025-20/08/2025)',  DATE '2025-06-01', DATE '2025-08-20');
+ 32      probar('Anio 2024 (antes sin temporadas)',           DATE '2024-07-18', DATE '2024-07-23');
+ 33  END;
+ 34  /
+Una temporada (05/10/2026-08/10/2026)            noches=  3 temporadas=1 esperado=    537000 funcion=    537000   OK
+Dos temporadas (28/11/2026-03/12/2026)           noches=  5 temporadas=2 esperado=    873000 funcion=    873000   OK
+Tres temporadas, S. Santa (27/03-08/04/26)       noches= 12 temporadas=3 esperado=   1900000 funcion=   1900000   OK
+Cambio de anio (29/12/2026-03/01/2027)           noches=  5 temporadas=2 esperado=    840000 funcion=    840000   OK
+Una sola noche (24/12/2025-25/12/2025)           noches=  1 temporadas=1 esperado=    168000 funcion=    168000   OK
+Cuatro temporadas (01/06/2025-20/08/2025)        noches= 80 temporadas=4 esperado=  12701000 funcion=  12701000   OK
+Anio 2024 (antes sin temporadas)                 noches=  5 temporadas=2 esperado=    810000 funcion=    810000   OK
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P1.3 Errores esperados de fn_valor_estadia =====
+===== P1.3 Errores esperados de fn_valor_estadia =====
+SQL> DECLARE
+  2      v NUMBER;
+  3  BEGIN
+  4      v := pkg_turismo.fn_valor_estadia(:hab, DATE '2026-12-10', DATE '2026-12-10');
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: checkout = checkin fue aceptado');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_fechas_invalidas THEN DBMS_OUTPUT.PUT_LINE('OK  checkout = checkin  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  checkout = checkin  -> ORA-20002: El check-out (10/12/2026) debe ser posterior al check-in (10/12/2026).
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> DECLARE
+  2      v NUMBER;
+  3  BEGIN
+  4      v := pkg_turismo.fn_valor_estadia(:hab, DATE '2026-12-10', DATE '2026-12-07');
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: checkout < checkin fue aceptado');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_fechas_invalidas THEN DBMS_OUTPUT.PUT_LINE('OK  checkout < checkin  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  checkout < checkin  -> ORA-20002: El check-out (07/12/2026) debe ser posterior al check-in (10/12/2026).
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> DECLARE
+  2      v NUMBER;
+  3  BEGIN
+  4      v := pkg_turismo.fn_valor_estadia(-1, DATE '2026-12-10', DATE '2026-12-12');
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: habitacion inexistente aceptada');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_habitacion_no_existe THEN DBMS_OUTPUT.PUT_LINE('OK  habitacion -1      -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  habitacion -1      -> ORA-20005: La habitacion -1 no existe.
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> DECLARE
+  2      v NUMBER;
+  3  BEGIN
+  4      v := pkg_turismo.fn_valor_estadia(:hab, DATE '2027-12-30', DATE '2028-01-02');
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: noche sin tarifa aceptada');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_sin_tarifa THEN DBMS_OUTPUT.PUT_LINE('OK  noche sin tarifa    -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  noche sin tarifa    -> ORA-20006: No hay tarifa para la habitacion 1 la noche del 01/01/2028.
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P2. sp_crear_reserva (y sp_agregar_habitacion)
+SQL> -- ============================================================================
+SQL> VARIABLE hab_libre  NUMBER
+SQL> VARIABLE cap        NUMBER
+SQL> VARIABLE aloj_libre NUMBER
+SQL> VARIABLE hab2       NUMBER
+SQL> VARIABLE hab_otro   NUMBER
+SQL> VARIABLE res1       NUMBER
+SQL> VARIABLE val1       NUMBER
+SQL> VARIABLE res2       NUMBER
+SQL> VARIABLE val2       NUMBER
+SQL> 
+SQL> -- Se buscan habitaciones libres entre el 20/11/2026 y el 15/12/2026
+SQL> DECLARE
+  2      FUNCTION libre(p_hab NUMBER) RETURN BOOLEAN IS
+  3          n NUMBER;
+  4      BEGIN
+  5          SELECT COUNT(*) INTO n
+  6            FROM RESERVA_HABITACION rh JOIN RESERVA r ON r.reserva_id = rh.reserva_id
+  7           WHERE rh.habitacion_id = p_hab AND r.estado <> 'CANCELADA'
+  8             AND rh.fecha_checkin < DATE '2026-12-15' AND rh.fecha_checkout > DATE '2026-11-20';
+  9          RETURN n = 0;
+ 10      END;
+ 11  BEGIN
+ 12      :hab_libre := NULL;
+ 13      :hab2      := NULL;
+ 14      :hab_otro  := NULL;
+ 15      FOR h IN (SELECT habitacion_id, capacidad_maxima, alojamiento_id
+ 16                  FROM HABITACION ORDER BY habitacion_id) LOOP
+ 17          IF :hab_libre IS NULL THEN
+ 18              IF h.capacidad_maxima >= 2 AND libre(h.habitacion_id) THEN
+ 19                  :hab_libre := h.habitacion_id; :cap := h.capacidad_maxima; :aloj_libre := h.alojamiento_id;
+ 20              END IF;
+ 21          ELSIF :hab2 IS NULL AND h.alojamiento_id = :aloj_libre THEN
+ 22              IF libre(h.habitacion_id) THEN :hab2 := h.habitacion_id; END IF;
+ 23          ELSIF :hab_otro IS NULL AND h.alojamiento_id <> :aloj_libre THEN
+ 24              IF libre(h.habitacion_id) THEN :hab_otro := h.habitacion_id; END IF;
+ 25          END IF;
+ 26          EXIT WHEN :hab_libre IS NOT NULL AND :hab2 IS NOT NULL AND :hab_otro IS NOT NULL;
+ 27      END LOOP;
+ 28      DBMS_OUTPUT.PUT_LINE('cliente=' || :cli || '  habitacion=' || :hab_libre || ' (capacidad ' || :cap ||
+ 29                           ', alojamiento ' || :aloj_libre || ')  hab2=' || :hab2 || '  hab_otro=' || :hab_otro);
+ 30  END;
+ 31  /
+cliente=3003  habitacion=8 (capacidad 7, alojamiento 1)  hab2=9  hab_otro=26
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P2.1 Reserva valida que cruza temporadas (28/11/2026 -> 03/12/2026, 2 huespedes) =====
+===== P2.1 Reserva valida que cruza temporadas (28/11/2026 -> 03/12/2026, 2 huespedes) =====
+SQL> BEGIN
+  2      pkg_turismo.sp_crear_reserva(
+  3          p_cliente_id    => :cli,
+  4          p_habitacion_id => :hab_libre,
+  5          p_fecha_in      => DATE '2026-11-28',
+  6          p_fecha_out     => DATE '2026-12-03',
+  7          p_num_huespedes => 2,
+  8          p_reserva_id    => :res1,
+  9          p_valor_estadia => :val1,
+ 10          p_estado        => 'CONFIRMADA');
+ 11      DBMS_OUTPUT.PUT_LINE('OK  reserva creada: ' || :res1 || '  valor estadia: ' || :val1 ||
+ 12          CASE WHEN :val1 = pkg_turismo.fn_valor_estadia(:hab_libre, DATE '2026-11-28', DATE '2026-12-03')
+ 13               THEN '  (= fn_valor_estadia)' ELSE '  FALLO: no coincide con la funcion' END);
+ 14  END;
+ 15  /
+OK  reserva creada: 25004  valor estadia: 1299000  (= fn_valor_estadia)
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> SELECT r.reserva_id, r.cliente_id, r.fecha_checkin, r.fecha_checkout, r.estado,
+  2         rh.habitacion_id, rh.num_huespedes
+  3  FROM   RESERVA r JOIN RESERVA_HABITACION rh ON rh.reserva_id = r.reserva_id
+  4  WHERE  r.reserva_id = :res1;
+
+RESERVA_ID CLIENTE_ID FECHA_CHEC FECHA_CHEC ESTADO          HABITACION_ID NUM_HUESPEDES
+---------- ---------- ---------- ---------- --------------- ------------- -------------
+     25004       3003 28/11/2026 03/12/2026 CONFIRMADA                  8             2
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P2.2 Habitacion no disponible (-20001): misma habitacion 01/12 -> 04/12 =====
+===== P2.2 Habitacion no disponible (-20001): misma habitacion 01/12 -> 04/12 =====
+SQL> DECLARE
+  2      v_id NUMBER; v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_crear_reserva(:cli, :hab_libre, DATE '2026-12-01', DATE '2026-12-04', 1, v_id, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: se acepto una reserva solapada');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_habitacion_no_disponible THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20001: Habitacion no disponible: la habitacion 8 ya esta reservada entre el 01/12/2026 y el 04/12/2026 (se cruza con la reserva 25004).
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P2.3 Checkout igual al checkin (-20002) =====
+===== P2.3 Checkout igual al checkin (-20002) =====
+SQL> DECLARE
+  2      v_id NUMBER; v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_crear_reserva(:cli, :hab_libre, DATE '2026-12-10', DATE '2026-12-10', 1, v_id, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: checkout = checkin aceptado');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_fechas_invalidas THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20002: Fechas invalidas: el check-out (10/12/2026) es anterior o igual al check-in (10/12/2026).
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P2.4 Checkout anterior al checkin (-20002) =====
+===== P2.4 Checkout anterior al checkin (-20002) =====
+SQL> DECLARE
+  2      v_id NUMBER; v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_crear_reserva(:cli, :hab_libre, DATE '2026-12-10', DATE '2026-12-08', 1, v_id, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: checkout < checkin aceptado');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_fechas_invalidas THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20002: Fechas invalidas: el check-out (08/12/2026) es anterior o igual al check-in (10/12/2026).
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P2.5 Capacidad excedida (-20003): capacidad + 1 huespedes =====
+===== P2.5 Capacidad excedida (-20003): capacidad + 1 huespedes =====
+SQL> DECLARE
+  2      v_id NUMBER; v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_crear_reserva(:cli, :hab_libre, DATE '2026-12-10', DATE '2026-12-12', :cap + 1, v_id, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: se excedio la capacidad');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_capacidad_excedida THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20003: Capacidad excedida: la habitacion 8 admite 7 huesped(es) y se pidieron 8.
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P2.6 Otras validaciones: cliente, habitacion y estado (-20004, -20005, -20012) =====
+===== P2.6 Otras validaciones: cliente, habitacion y estado (-20004, -20005, -20012) =====
+SQL> DECLARE
+  2      v_id NUMBER; v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_crear_reserva(-1, :hab_libre, DATE '2026-12-10', DATE '2026-12-12', 1, v_id, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: cliente inexistente aceptado');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_cliente_no_existe THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20004: El cliente -1 no existe.
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> DECLARE
+  2      v_id NUMBER; v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_crear_reserva(:cli, -1, DATE '2026-12-10', DATE '2026-12-12', 1, v_id, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: habitacion inexistente aceptada');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_habitacion_no_existe THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20005: La habitacion -1 no existe.
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> DECLARE
+  2      v_id NUMBER; v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_crear_reserva(:cli, :hab_libre, DATE '2026-12-10', DATE '2026-12-12', 1, v_id, v_val, 'COMPLETADA');
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: estado inicial invalido aceptado');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_parametro_invalido THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20012: Una reserva nueva solo puede quedar PENDIENTE o CONFIRMADA.
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P2.7 Borde: entrar el mismo dia del check-out anterior (03/12 -> 05/12) si se permite =====
+===== P2.7 Borde: entrar el mismo dia del check-out anterior (03/12 -> 05/12) si se permite =====
+SQL> BEGIN
+  2      pkg_turismo.sp_crear_reserva(:cli, :hab_libre, DATE '2026-12-03', DATE '2026-12-05', 1, :res2, :val2);
+  3      DBMS_OUTPUT.PUT_LINE('OK  reserva creada: ' || :res2 || '  valor: ' || :val2 || ' (estado por defecto PENDIENTE)');
+  4  END;
+  5  /
+OK  reserva creada: 25005  valor: 510000 (estado por defecto PENDIENTE)
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P2.8 Reserva de grupo: segunda habitacion del mismo alojamiento, llega un dia despues =====
+===== P2.8 Reserva de grupo: segunda habitacion del mismo alojamiento, llega un dia despues =====
+SQL> DECLARE
+  2      v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_agregar_habitacion(:res1, :hab2, DATE '2026-11-29', DATE '2026-12-03', 1, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('OK  linea agregada, valor linea: ' || v_val ||
+  6                           '  valor total reserva: ' || pkg_turismo.fn_valor_reserva(:res1) ||
+  7                           CASE WHEN pkg_turismo.fn_valor_reserva(:res1) = :val1 + v_val
+  8                                THEN '  (= estadia 1 + estadia 2)' ELSE '  FALLO' END);
+  9  END;
+ 10  /
+OK  linea agregada, valor linea: 580000  valor total reserva: 1879000  (= estadia 1 + estadia 2)
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> DECLARE
+  2      v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_agregar_habitacion(:res1, :hab_otro, DATE '2026-11-28', DATE '2026-12-03', 1, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: se agrego una habitacion de otro alojamiento');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_otro_alojamiento THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20010: La habitacion 26 pertenece a otro alojamiento distinto al de la reserva 25004.
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> DECLARE
+  2      v_val NUMBER;
+  3  BEGIN
+  4      pkg_turismo.sp_agregar_habitacion(:res1, :hab2, DATE '2026-11-25', DATE '2026-11-29', 1, v_val);
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: se acepto una linea fuera del rango de la reserva');
+  6  EXCEPTION
+  7      WHEN pkg_turismo.e_fechas_invalidas THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8  END;
+  9  /
+OK  -> ORA-20002: Las fechas de la habitacion deben estar dentro del rango de la reserva (28/11/2026 - 03/12/2026).
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> COMMIT;
+Confirmación terminada.
+SQL> 
+SQL> SELECT r.reserva_id, r.estado, rh.habitacion_id, rh.fecha_checkin, rh.fecha_checkout, rh.num_huespedes,
+  2         pkg_turismo.fn_valor_estadia(rh.habitacion_id, rh.fecha_checkin, rh.fecha_checkout) AS valor_linea
+  3  FROM   RESERVA r JOIN RESERVA_HABITACION rh ON rh.reserva_id = r.reserva_id
+  4  WHERE  r.reserva_id IN (:res1, :res2)
+  5  ORDER BY r.reserva_id, rh.reserva_habitacion_id;
+
+RESERVA_ID ESTADO          HABITACION_ID FECHA_CHEC FECHA_CHEC NUM_HUESPEDES VALOR_LINEA
+---------- --------------- ------------- ---------- ---------- ------------- -----------
+     25004 CONFIRMADA                  8 28/11/2026 03/12/2026             2     1299000
+     25004 CONFIRMADA                  9 29/11/2026 03/12/2026             1      580000
+     25005 PENDIENTE                   8 03/12/2026 05/12/2026             1      510000
+
+3 filas seleccionadas. 
+
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P3. CURSOR EXPLICITO CON PARAMETROS: LIQUIDACION MENSUAL
+SQL> -- ============================================================================
+SQL> PROMPT ===== P3.1 Liquidacion de julio 2025, todos los alojamientos =====
+===== P3.1 Liquidacion de julio 2025, todos los alojamientos =====
+SQL> EXEC pkg_turismo.sp_liquidacion_mensual(2025, 7);
+LIQUIDACION MENSUAL 2025-07  (comision 10 %)
+Municipio   Alojamiento                                 Res  Noches          Bruto     Comision           Neto
+--------------------------------------------------------------------------------------------------------------
+Armenia     Finca Cafetera Mirador Armenia 5              8      36      7,547,000      754,700      6,792,300
+Armenia     Finca Cafetera Rio Claro Armenia 8            2       6        872,000       87,200        784,800
+Armenia     Hostal Paraiso Armenia 14                    12      44     10,284,000    1,028,400      9,255,600
+Armenia     Hotel Andino Armenia 1                       27     107     23,544,000    2,354,400     21,189,600
+Armenia     Hotel Bosque Verde Armenia 10                27     102     23,435,000    2,343,500     21,091,500
+Armenia     Hotel Colonial Armenia 7                     41     184     46,562,000    4,656,200     41,905,800
+Armenia     Hotel del Valle Armenia 13                   46     181     45,608,000    4,560,800     41,047,200
+Armenia     Hotel Mirador Armenia 11                     30     110     23,386,000    2,338,600     21,047,400
+Armenia     Hotel Mirador Armenia 3                      26      97     22,104,000    2,210,400     19,893,600
+Armenia     Hotel Paraiso Armenia 9                      32     140     32,927,000    3,292,700     29,634,300
+Armenia     Hotel Real Armenia 2                         31     103     22,363,000    2,236,300     20,126,700
+Armenia     Hotel Real Armenia 4                         36     119     29,914,000    2,991,400     26,922,600
+Armenia     Hotel Rio Claro Armenia 12                   43     156     42,636,000    4,263,600     38,372,400
+Armenia     Hotel Sol Naciente Armenia 6                 31     123     30,886,000    3,088,600     27,797,400
+Buenavista  Finca Cafetera Colonial Buenavista 59         5      22      6,309,000      630,900      5,678,100
+Calarca     Hostal Sol Naciente Calarca 18               12      41      9,269,000      926,900      8,342,100
+Calarca     Hotel Andino Calarca 20                      24      84     18,466,000    1,846,600     16,619,400
+Calarca     Hotel Bosque Verde Calarca 19                33     108     25,135,000    2,513,500     22,621,500
+Calarca     Hotel del Valle Calarca 16                   24      93     22,744,000    2,274,400     20,469,600
+Calarca     Hotel Rio Claro Calarca 15                   44     133     34,837,000    3,483,700     31,353,300
+Calarca     Hotel Sol Naciente Calarca 17                51     176     47,340,000    4,734,000     42,606,000
+Circasia    Finca Cafetera del Valle Circasia 34         10      31      5,330,000      533,000      4,797,000
+Circasia    Finca Cafetera La Montana Circasia 35        11      41      7,742,000      774,200      6,967,800
+Circasia    Finca Cafetera La Montana Circasia 36         3      10      1,868,000      186,800      1,681,200
+Circasia    Hostal Real Circasia 33                      15      80     18,753,000    1,875,300     16,877,700
+Cordoba     Finca Cafetera Andino Cordoba 60              7      32      6,574,000      657,400      5,916,600
+Filandia    Glamping Andino Filandia 39                  13      82     16,712,000    1,671,200     15,040,800
+Filandia    Glamping Los Yarumos Filandia 38              6      32      6,602,000      660,200      5,941,800
+Filandia    Glamping Los Yarumos Filandia 40             11      39      8,075,000      807,500      7,267,500
+Filandia    Glamping Los Yarumos Filandia 41             11      48     11,123,000    1,112,300     10,010,700
+Filandia    Glamping Sol Naciente Filandia 42             7      22      4,472,000      447,200      4,024,800
+Filandia    Hotel Real Filandia 37                       48     175     43,808,000    4,380,800     39,427,200
+Genova      Finca Cafetera Andino Genova 55               9      25      5,264,000      526,400      4,737,600
+Genova      Finca Cafetera Cafetero Genova 56             4       8      1,222,000      122,200      1,099,800
+La Tebaida  Glamping Sol Naciente La Tebaida 30          10      30      9,108,000      910,800      8,197,200
+La Tebaida  Hotel Los Yarumos La Tebaida 31              30     105     26,079,000    2,607,900     23,471,100
+La Tebaida  Hotel Paraiso La Tebaida 32                  36     130     31,382,000    3,138,200     28,243,800
+Montenegro  Finca Cafetera La Montana Montenegro 23       5      17      3,026,000      302,600      2,723,400
+Montenegro  Finca Cafetera Real Montenegro 21             6      18      3,068,000      306,800      2,761,200
+Montenegro  Finca Cafetera Real Montenegro 22             7      17      5,398,000      539,800      4,858,200
+Montenegro  Finca Cafetera Sol Naciente Montenegro 24     7      23      4,051,000      405,100      3,645,900
+Montenegro  Glamping Bosque Verde Montenegro 25           8      59     11,702,000    1,170,200     10,531,800
+Pijao       Finca Cafetera Colonial Pijao 57              1       1        396,000       39,600        356,400
+Pijao       Finca Cafetera Real Pijao 58                  4      11      2,923,000      292,300      2,630,700
+Quimbaya    Glamping Bosque Verde Quimbaya 27            15      58     13,149,000    1,314,900     11,834,100
+Quimbaya    Glamping Colonial Quimbaya 28                10      27      7,308,000      730,800      6,577,200
+Quimbaya    Glamping Paraiso Quimbaya 26                 12      48     13,067,000    1,306,700     11,760,300
+Quimbaya    Hotel Bosque Verde Quimbaya 29               46     160     38,686,000    3,868,600     34,817,400
+Salento     Glamping Colonial Salento 53                  9      28      6,067,000      606,700      5,460,300
+Salento     Glamping del Valle Salento 46                 6      18      3,755,000      375,500      3,379,500
+Salento     Glamping La Montana Salento 44               13      41     12,029,000    1,202,900     10,826,100
+Salento     Glamping La Montana Salento 52                6      26      5,427,000      542,700      4,884,300
+Salento     Glamping Real Salento 45                      9      25      4,432,000      443,200      3,988,800
+Salento     Glamping Real Salento 49                      6      21      5,668,000      566,800      5,101,200
+Salento     Glamping Real Salento 50                      0       0              0            0              0
+Salento     Glamping Rio Claro Salento 51                 4      12      2,906,000      290,600      2,615,400
+Salento     Glamping Sol Naciente Salento 47              7      15      5,159,000      515,900      4,643,100
+Salento     Hostal Mirador Salento 48                     9      28      8,100,000      810,000      7,290,000
+Salento     Hostal Real Salento 54                        6      29      5,784,000      578,400      5,205,600
+Salento     Hotel Real Salento 43                        37     137     44,008,000    4,400,800     39,607,200
+--------------------------------------------------------------------------------------------------------------
+TOTAL (60 alojamientos)                                        3874    936,391,000   93,639,100    842,751,900
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P3.2 Resumen guardado en LIQUIDACION_MENSUAL =====
+===== P3.2 Resumen guardado en LIQUIDACION_MENSUAL =====
+SQL> SELECT COUNT(*) AS alojamientos, SUM(num_reservas) AS reservas, SUM(noches_vendidas) AS noches,
+  2         SUM(valor_hospedaje) AS hospedaje, SUM(valor_servicios) AS servicios,
+  3         SUM(valor_bruto) AS bruto, SUM(valor_comision) AS comision, SUM(valor_neto) AS neto
+  4  FROM   LIQUIDACION_MENSUAL
+  5  WHERE  anio = 2025 AND mes = 7;
+
+ALOJAMIENTOS   RESERVAS     NOCHES  HOSPEDAJE  SERVICIOS      BRUTO   COMISION       NETO
+------------ ---------- ---------- ---------- ---------- ---------- ---------- ----------
+          60       1049       3874  686937000  249454000  936391000   93639100  842751900
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P3.3 Verificacion independiente (noches contra la vista materializada, hospedaje con CALENDARIO) =====
+===== P3.3 Verificacion independiente (noches contra la vista materializada, hospedaje con CALENDARIO) =====
+SQL> SELECT (SELECT SUM(noches_vendidas) FROM LIQUIDACION_MENSUAL WHERE anio = 2025 AND mes = 7) AS noches_liquidacion,
+  2         (SELECT SUM(noches_vendidas) FROM MV_OCUPACION_MENSUAL WHERE anio = 2025 AND mes = 7) AS noches_vista_mat,
+  3         (SELECT SUM(valor_hospedaje) FROM LIQUIDACION_MENSUAL WHERE anio = 2025 AND mes = 7) AS hospedaje_liquidacion,
+  4         (SELECT SUM(ta.precio_noche)
+  5          FROM   RESERVA_HABITACION rh
+  6          JOIN   RESERVA r    ON r.reserva_id = rh.reserva_id
+  7          JOIN   CALENDARIO c ON c.fecha >= rh.fecha_checkin AND c.fecha < rh.fecha_checkout
+  8          JOIN   TEMPORADA t  ON c.fecha BETWEEN t.fecha_inicio AND t.fecha_fin
+  9          JOIN   TARIFA ta    ON ta.habitacion_id = rh.habitacion_id AND ta.temporada_id = t.temporada_id
+ 10          WHERE  r.estado IN ('CONFIRMADA', 'COMPLETADA')
+ 11          AND    c.anio = 2025 AND c.mes = 7)                                                AS hospedaje_noche_a_noche
+ 12  FROM dual;
+
+NOCHES_LIQUIDACION NOCHES_VISTA_MAT HOSPEDAJE_LIQUIDACION HOSPEDAJE_NOCHE_A_NOCHE
+------------------ ---------------- --------------------- -----------------------
+              3874             3874             686937000               686937000
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P3.4 Top 5 alojamientos de julio 2025 por valor neto =====
+===== P3.4 Top 5 alojamientos de julio 2025 por valor neto =====
+SQL> SELECT l.alojamiento_id, a.nombre_comercial, l.num_reservas, l.noches_vendidas,
+  2         l.valor_bruto, l.valor_comision, l.valor_neto
+  3  FROM   LIQUIDACION_MENSUAL l JOIN ALOJAMIENTO a ON a.alojamiento_id = l.alojamiento_id
+  4  WHERE  l.anio = 2025 AND l.mes = 7
+  5  ORDER BY l.valor_neto DESC
+  6  FETCH FIRST 5 ROWS ONLY;
+
+ALOJAMIENTO_ID NOMBRE_COMERCIAL                                                                                                                                       NUM_RESERVAS NOCHES_VENDIDAS VALOR_BRUTO
+-------------- ------------------------------------------------------------------------------------------------------------------------------------------------------ ------------ --------------- -----------
+VALOR_COMISION VALOR_NETO
+-------------- ----------
+            17 Hotel Sol Naciente Calarca 17                                                                                                                                    51             176    47340000 
+       4734000   42606000
+
+             7 Hotel Colonial Armenia 7                                                                                                                                         41             184    46562000 
+       4656200   41905800
+
+            13 Hotel del Valle Armenia 13                                                                                                                                       46             181    45608000 
+       4560800   41047200
+
+            43 Hotel Real Salento 43                                                                                                                                            37             137    44008000 
+       4400800   39607200
+
+            37 Hotel Real Filandia 37                                                                                                                                           48             175    43808000 
+       4380800   39427200
+
+
+5 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P3.5 Mismo cursor con otros parametros: un solo alojamiento, diciembre 2025, comision 15 % =====
+===== P3.5 Mismo cursor con otros parametros: un solo alojamiento, diciembre 2025, comision 15 % =====
+SQL> VARIABLE aloj_top NUMBER
+SQL> EXEC SELECT alojamiento_id INTO :aloj_top FROM (SELECT alojamiento_id FROM MV_OCUPACION_MENSUAL WHERE anio = 2025 AND mes = 12 ORDER BY noches_vendidas DESC) WHERE ROWNUM = 1;
+Procedimiento PL/SQL terminado correctamente.
+SQL> EXEC pkg_turismo.sp_liquidacion_mensual(2025, 12, :aloj_top, 0.15);
+LIQUIDACION MENSUAL 2025-12  (comision 15 %)
+Municipio   Alojamiento                                 Res  Noches          Bruto     Comision           Neto
+--------------------------------------------------------------------------------------------------------------
+Armenia     Hotel Colonial Armenia 7                     60     249     73,819,000   11,072,850     62,746,150
+--------------------------------------------------------------------------------------------------------------
+TOTAL (1 alojamientos)                                          249     73,819,000   11,072,850     62,746,150
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P3.6 Parametro invalido (-20012) =====
+===== P3.6 Parametro invalido (-20012) =====
+SQL> BEGIN
+  2      pkg_turismo.sp_liquidacion_mensual(2025, 13);
+  3      DBMS_OUTPUT.PUT_LINE('FALLO: mes 13 aceptado');
+  4  EXCEPTION
+  5      WHEN pkg_turismo.e_parametro_invalido THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  6  END;
+  7  /
+OK  -> ORA-20012: Mes invalido: 13
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P4. PAQUETE
+SQL> -- ============================================================================
+SQL> PROMPT ===== P4.1 Estado del paquete y subprogramas publicos =====
+===== P4.1 Estado del paquete y subprogramas publicos =====
+SQL> SELECT object_name, object_type, status, last_ddl_time
+  2  FROM   user_objects
+  3  WHERE  object_name = 'PKG_TURISMO';
+
+OBJECT_NAME                                                                                                                      OBJECT_TYPE             STATUS  LAST_DDL_T
+-------------------------------------------------------------------------------------------------------------------------------- ----------------------- ------- ----------
+PKG_TURISMO                                                                                                                      PACKAGE                 VALID   20/11/2026
+PKG_TURISMO                                                                                                                      PACKAGE BODY            VALID   20/11/2026
+
+2 filas seleccionadas. 
+
+SQL> 
+SQL> SELECT object_name AS paquete, procedure_name AS subprograma, subprogram_id
+  2  FROM   user_procedures
+  3  WHERE  object_name = 'PKG_TURISMO' AND procedure_name IS NOT NULL
+  4  ORDER BY subprogram_id;
+
+PAQUETE
+--------------------------------------------------------------------------------------------------------------------------------
+SUBPROGRAMA                                                                                                                      SUBPROGRAM_ID
+-------------------------------------------------------------------------------------------------------------------------------- -------------
+PKG_TURISMO                                                                                                                      
+FN_VALOR_ESTADIA                                                                                                                             1
+
+PKG_TURISMO                                                                                                                      
+FN_VALOR_RESERVA                                                                                                                             2
+
+PKG_TURISMO                                                                                                                      
+FN_TOTAL_PAGADO                                                                                                                              3
+
+PKG_TURISMO                                                                                                                      
+FN_RESERVA_PAGADA                                                                                                                            4
+
+PKG_TURISMO                                                                                                                      
+SP_CREAR_RESERVA                                                                                                                             5
+
+PKG_TURISMO                                                                                                                      
+SP_AGREGAR_HABITACION                                                                                                                        6
+
+PKG_TURISMO                                                                                                                      
+SP_CANCELAR_RESERVA                                                                                                                          7
+
+PKG_TURISMO                                                                                                                      
+SP_LIQUIDACION_MENSUAL                                                                                                                       8
+
+
+8 filas seleccionadas. 
+
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P5. DISPARADOR DE SENTENCIA: AUDITORIA DE TARIFA
+SQL> -- Se modifican tarifas de 'Temporada media III 2027' (sin reservas, asi no se
+SQL> -- alteran los montos ya pagados).
+SQL> -- ============================================================================
+SQL> VARIABLE temp_prueba NUMBER
+SQL> VARIABLE precio_guardado NUMBER
+SQL> VARIABLE aud_ini NUMBER
+SQL> EXEC SELECT temporada_id INTO :temp_prueba FROM TEMPORADA WHERE nombre = 'Temporada media III' AND anio = 2027;
+Procedimiento PL/SQL terminado correctamente.
+SQL> -- solo se muestran las sentencias auditadas en esta corrida
+SQL> EXEC SELECT NVL(MAX(id_sentencia), 0) INTO :aud_ini FROM AUDITORIA_TARIFA;
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P5.1 Tarifas antes del cambio =====
+===== P5.1 Tarifas antes del cambio =====
+SQL> SELECT ta.habitacion_id, ta.temporada_id, ta.precio_noche
+  2  FROM   TARIFA ta JOIN HABITACION h ON h.habitacion_id = ta.habitacion_id
+  3  WHERE  ta.temporada_id = :temp_prueba AND h.alojamiento_id = :aloj_top
+  4  ORDER BY ta.habitacion_id;
+
+HABITACION_ID TEMPORADA_ID PRECIO_NOCHE
+------------- ------------ ------------
+          130           39       112000
+          131           39       124000
+          132           39       135000
+          133           39       115000
+          134           39       299000
+          135           39       142000
+          136           39       130000
+          137           39       137000
+          138           39        74000
+          139           39       171000
+          140           39       147000
+          141           39        80000
+          142           39       229000
+          143           39       125000
+          144           39       118000
+          145           39       286000
+          146           39       117000
+          147           39        93000
+          148           39       247000
+          149           39       303000
+          150           39       152000
+          151           39       105000
+          152           39       301000
+          153           39       255000
+          154           39       140000
+          155           39        81000
+          156           39       219000
+          157           39       228000
+          158           39        95000
+          159           39       106000
+          160           39       158000
+          161           39       150000
+          162           39       122000
+          163           39       287000
+
+34 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P5.2 Una sola sentencia UPDATE que cambia varias filas (+5.000) =====
+===== P5.2 Una sola sentencia UPDATE que cambia varias filas (+5.000) =====
+SQL> UPDATE TARIFA
+  2  SET    precio_noche = precio_noche + 5000
+  3  WHERE  temporada_id = :temp_prueba
+  4  AND    habitacion_id IN (SELECT habitacion_id FROM HABITACION WHERE alojamiento_id = :aloj_top);
+
+34 filas actualizadas.
+
+SQL> 
+SQL> PROMPT ===== P5.3 UPDATE que no cambia el precio (no debe auditar filas) =====
+===== P5.3 UPDATE que no cambia el precio (no debe auditar filas) =====
+SQL> UPDATE TARIFA SET precio_noche = precio_noche
+  2  WHERE  temporada_id = :temp_prueba AND habitacion_id = :hab;
+
+1 fila actualizadas.
+
+SQL> 
+SQL> PROMPT ===== P5.4 DELETE e INSERT de una tarifa (operaciones DELETE e INSERT) =====
+===== P5.4 DELETE e INSERT de una tarifa (operaciones DELETE e INSERT) =====
+SQL> EXEC SELECT precio_noche INTO :precio_guardado FROM TARIFA WHERE habitacion_id = :hab AND temporada_id = :temp_prueba;
+Procedimiento PL/SQL terminado correctamente.
+SQL> DELETE FROM TARIFA WHERE habitacion_id = :hab AND temporada_id = :temp_prueba;
+
+1 fila eliminado
+
+SQL> INSERT INTO TARIFA (habitacion_id, temporada_id, precio_noche) VALUES (:hab, :temp_prueba, :precio_guardado);
+
+1 fila insertadas.
+
+SQL> COMMIT;
+Confirmación terminada.
+SQL> 
+SQL> PROMPT ===== P5.5 Auditoria agrupada por sentencia (quien y cuando, una fila por sentencia) =====
+===== P5.5 Auditoria agrupada por sentencia (quien y cuando, una fila por sentencia) =====
+SQL> SELECT id_sentencia, operacion, COUNT(*) AS filas_auditadas,
+  2         MIN(usuario_bd) AS usuario_bd, MIN(usuario_so) AS usuario_so, MIN(equipo) AS equipo,
+  3         MIN(fecha_hora) AS fecha_hora
+  4  FROM   AUDITORIA_TARIFA
+  5  WHERE  id_sentencia > :aud_ini
+  6  GROUP BY id_sentencia, operacion
+  7  ORDER BY id_sentencia;
+
+ID_SENTENCIA OPERAC FILAS_AUDITADAS USUARIO_BD
+------------ ------ --------------- --------------------------------------------------------------------------------------------------------------------------------
+USUARIO_SO
+--------------------------------------------------------------------------------------------------------------------------------
+EQUIPO                                                                                                                           FECHA_HORA                    
+-------------------------------------------------------------------------------------------------------------------------------- ------------------------------
+           1 UPDATE              34 TURISMOUQ                                                                                                                        
+Valery                                                                                                                           
+LAPTOP-A4NRM1P0                                                                                                                  20/11/26 03:52:06,858008000 AM
+
+           3 DELETE               1 TURISMOUQ                                                                                                                        
+Valery                                                                                                                           
+LAPTOP-A4NRM1P0                                                                                                                  20/11/26 03:52:06,996751000 AM
+
+           4 INSERT               1 TURISMOUQ                                                                                                                        
+Valery                                                                                                                           
+LAPTOP-A4NRM1P0                                                                                                                  20/11/26 03:52:07,016972000 AM
+
+
+3 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P5.6 Detalle: valor anterior y nuevo (en INSERT el anterior es NULL; en DELETE, el nuevo) =====
+===== P5.6 Detalle: valor anterior y nuevo (en INSERT el anterior es NULL; en DELETE, el nuevo) =====
+SQL> SELECT id_sentencia, operacion, habitacion_id, temporada_id, precio_anterior, precio_nuevo,
+  2         usuario_bd, TO_CHAR(fecha_hora, 'DD/MM/YYYY HH24:MI:SS.FF3') AS fecha_hora
+  3  FROM   AUDITORIA_TARIFA
+  4  WHERE  id_sentencia > :aud_ini
+  5  ORDER BY auditoria_id
+  6  FETCH FIRST 15 ROWS ONLY;
+
+ID_SENTENCIA OPERAC HABITACION_ID TEMPORADA_ID PRECIO_ANTERIOR PRECIO_NUEVO USUARIO_BD
+------------ ------ ------------- ------------ --------------- ------------ --------------------------------------------------------------------------------------------------------------------------------
+FECHA_HORA             
+-----------------------
+           1 UPDATE           130           39          112000       117000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           131           39          124000       129000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           132           39          135000       140000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           133           39          115000       120000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           134           39          299000       304000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           135           39          142000       147000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           136           39          130000       135000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           137           39          137000       142000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           138           39           74000        79000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           139           39          171000       176000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           140           39          147000       152000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           141           39           80000        85000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           142           39          229000       234000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           143           39          125000       130000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+           1 UPDATE           144           39          118000       123000 TURISMOUQ                                                                                                                        
+20/11/2026 03:52:06.858
+
+
+15 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P5.7 Las tarifas vuelven a su valor (tambien queda auditado) =====
+===== P5.7 Las tarifas vuelven a su valor (tambien queda auditado) =====
+SQL> UPDATE TARIFA
+  2  SET    precio_noche = precio_noche - 5000
+  3  WHERE  temporada_id = :temp_prueba
+  4  AND    habitacion_id IN (SELECT habitacion_id FROM HABITACION WHERE alojamiento_id = :aloj_top);
+
+34 filas actualizadas.
+
+SQL> COMMIT;
+Confirmación terminada.
+SQL> 
+SQL> SELECT id_sentencia, operacion, COUNT(*) AS filas, MIN(precio_anterior) AS min_anterior,
+  2         MIN(precio_nuevo) AS min_nuevo
+  3  FROM   AUDITORIA_TARIFA
+  4  WHERE  id_sentencia > :aud_ini
+  5  GROUP BY id_sentencia, operacion
+  6  ORDER BY id_sentencia;
+
+ID_SENTENCIA OPERAC      FILAS MIN_ANTERIOR  MIN_NUEVO
+------------ ------ ---------- ------------ ----------
+           1 UPDATE         34        74000      79000
+           3 DELETE          1       155000           
+           4 INSERT          1                  155000
+           5 UPDATE         34        79000      74000
+
+4 filas seleccionadas. 
+
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P6. DISPARADOR DE FILA: SIN SOLAPES
+SQL> -- Se inserta DIRECTAMENTE en RESERVA_HABITACION (sin pasar por el paquete)
+SQL> -- para probar que el disparador es quien impide el solape.
+SQL> -- ============================================================================
+SQL> VARIABLE res_prueba NUMBER
+SQL> VARIABLE res_cancel NUMBER
+SQL> 
+SQL> PROMPT ===== P6.1 Lineas activas actuales de la habitacion de prueba =====
+===== P6.1 Lineas activas actuales de la habitacion de prueba =====
+SQL> SELECT rh.reserva_id, r.estado, rh.habitacion_id, rh.fecha_checkin, rh.fecha_checkout
+  2  FROM   RESERVA_HABITACION rh JOIN RESERVA r ON r.reserva_id = rh.reserva_id
+  3  WHERE  rh.habitacion_id = :hab_libre AND rh.fecha_checkin >= DATE '2026-11-01'
+  4  ORDER BY rh.fecha_checkin;
+
+RESERVA_ID ESTADO          HABITACION_ID FECHA_CHEC FECHA_CHEC
+---------- --------------- ------------- ---------- ----------
+       987 COMPLETADA                  8 01/11/2026 02/11/2026
+     19681 CANCELADA                   8 13/11/2026 15/11/2026
+     25004 CONFIRMADA                  8 28/11/2026 03/12/2026
+     10749 CANCELADA                   8 01/12/2026 10/12/2026
+     25005 PENDIENTE                   8 03/12/2026 05/12/2026
+
+5 filas seleccionadas. 
+
+SQL> 
+SQL> BEGIN
+  2      INSERT INTO RESERVA (cliente_id, fecha_checkin, fecha_checkout, estado)
+  3      VALUES (:cli, DATE '2026-12-01', DATE '2026-12-07', 'CONFIRMADA')
+  4      RETURNING reserva_id INTO :res_prueba;
+  5      INSERT INTO RESERVA (cliente_id, fecha_checkin, fecha_checkout, estado, fecha_cancelacion)
+  6      VALUES (:cli, DATE '2026-12-01', DATE '2026-12-07', 'CANCELADA', DATE '2026-11-15')
+  7      RETURNING reserva_id INTO :res_cancel;
+  8  END;
+  9  /
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P6.2 CASO REAL: INSERT directo que se solapa (01/12 -> 06/12) -> debe dar ORA-20011 =====
+===== P6.2 CASO REAL: INSERT directo que se solapa (01/12 -> 06/12) -> debe dar ORA-20011 =====
+SQL> INSERT INTO RESERVA_HABITACION (reserva_id, habitacion_id, fecha_checkin, fecha_checkout, num_huespedes)
+  2  VALUES (:res_prueba, :hab_libre, DATE '2026-12-01', DATE '2026-12-06', 1);
+
+Error que empieza en la línea: 592 del comando -
+INSERT INTO RESERVA_HABITACION (reserva_id, habitacion_id, fecha_checkin, fecha_checkout, num_huespedes)
+VALUES (:res_prueba, :hab_libre, DATE '2026-12-01', DATE '2026-12-06', 1)
+Error en la línea de comandos : 592 Columna : 13
+Informe de error -
+Error SQL: ORA-20011: Solape de reservas: la habitacion 8 ya esta ocupada por la reserva 25004 (28/11/2026 - 03/12/2026) y la linea pide 01/12/2026 - 06/12/2026.
+ORA-06512: en "TURISMOUQ.TRG_RESHAB_NO_SOLAPE", línea 44
+ORA-04088: error durante la ejecución del disparador 'TURISMOUQ.TRG_RESHAB_NO_SOLAPE'
+
+https://docs.oracle.com/error-help/db/ora-20011/
+
+More Details :
+https://docs.oracle.com/error-help/db/ora-20011/
+https://docs.oracle.com/error-help/db/ora-06512/
+https://docs.oracle.com/error-help/db/ora-04088/
+SQL> 
+SQL> PROMPT ===== P6.3 Mismo caso con manejo de excepcion =====
+===== P6.3 Mismo caso con manejo de excepcion =====
+SQL> BEGIN
+  2      INSERT INTO RESERVA_HABITACION (reserva_id, habitacion_id, fecha_checkin, fecha_checkout, num_huespedes)
+  3      VALUES (:res_prueba, :hab_libre, DATE '2026-12-02', DATE '2026-12-04', 1);
+  4      DBMS_OUTPUT.PUT_LINE('FALLO: el disparador dejo pasar un solape');
+  5  EXCEPTION
+  6      WHEN OTHERS THEN
+  7          IF SQLCODE = -20011 THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8          ELSE RAISE; END IF;
+  9  END;
+ 10  /
+OK  -> ORA-20011: Solape de reservas: la habitacion 8 ya esta ocupada por la reserva 25004 (28/11/2026 - 03/12/2026) y la linea pide 02/12/2026 - 04/12/2026.
+ORA-06512: en "TURISMOUQ.TRG_RESHAB_NO_SOLAPE", línea 44
+ORA-04088: error durante la ejecución del disparador 'TURISMOUQ.TRG_RESHAB_NO_SOLAPE'
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P6.4 Sin solape: entra el dia en que sale la anterior (05/12 -> 07/12) -> se acepta =====
+===== P6.4 Sin solape: entra el dia en que sale la anterior (05/12 -> 07/12) -> se acepta =====
+SQL> BEGIN
+  2      INSERT INTO RESERVA_HABITACION (reserva_id, habitacion_id, fecha_checkin, fecha_checkout, num_huespedes)
+  3      VALUES (:res_prueba, :hab_libre, DATE '2026-12-05', DATE '2026-12-07', 1);
+  4      DBMS_OUTPUT.PUT_LINE('OK  linea sin solape aceptada');
+  5  END;
+  6  /
+OK  linea sin solape aceptada
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P6.5 Linea de una reserva CANCELADA: no ocupa la habitacion -> se acepta =====
+===== P6.5 Linea de una reserva CANCELADA: no ocupa la habitacion -> se acepta =====
+SQL> BEGIN
+  2      INSERT INTO RESERVA_HABITACION (reserva_id, habitacion_id, fecha_checkin, fecha_checkout, num_huespedes)
+  3      VALUES (:res_cancel, :hab_libre, DATE '2026-12-01', DATE '2026-12-06', 1);
+  4      DBMS_OUTPUT.PUT_LINE('OK  linea de reserva cancelada aceptada (no ocupa)');
+  5  END;
+  6  /
+OK  linea de reserva cancelada aceptada (no ocupa)
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P6.6 INSERT ... SELECT de VARIAS filas, una se solapa -> ORA-20011 (no ORA-04091) =====
+===== P6.6 INSERT ... SELECT de VARIAS filas, una se solapa -> ORA-20011 (no ORA-04091) =====
+SQL> -- Antes de la correccion, este INSERT ... SELECT fallaba con ORA-04091
+SQL> -- (tabla mutante). Ahora el disparador compuesto valida al final de la
+SQL> -- sentencia y la rechaza COMPLETA: tampoco entra la fila que no se solapaba.
+SQL> VARIABLE lineas_antes NUMBER
+SQL> EXEC SELECT COUNT(*) INTO :lineas_antes FROM RESERVA_HABITACION WHERE reserva_id = :res_prueba;
+Procedimiento PL/SQL terminado correctamente.
+SQL> BEGIN
+  2      INSERT INTO RESERVA_HABITACION (reserva_id, habitacion_id, fecha_checkin, fecha_checkout, num_huespedes)
+  3      SELECT :res_prueba, :hab2,      DATE '2026-12-05', DATE '2026-12-07', 1 FROM dual UNION ALL
+  4      SELECT :res_prueba, :hab_libre, DATE '2026-12-02', DATE '2026-12-03', 1 FROM dual;
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: entro un solape con INSERT ... SELECT');
+  6  EXCEPTION
+  7      WHEN OTHERS THEN
+  8          IF SQLCODE = -20011 THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  9          ELSE DBMS_OUTPUT.PUT_LINE('FALLO: error inesperado ' || SQLERRM); END IF;
+ 10  END;
+ 11  /
+OK  -> ORA-20011: Solape de reservas: la habitacion 8 ya esta ocupada por la reserva 25004 (28/11/2026 - 03/12/2026) y la linea pide 02/12/2026 - 03/12/2026.
+ORA-06512: en "TURISMOUQ.TRG_RESHAB_NO_SOLAPE", línea 44
+ORA-04088: error durante la ejecución del disparador 'TURISMOUQ.TRG_RESHAB_NO_SOLAPE'
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> SELECT :lineas_antes AS lineas_antes,
+  2         (SELECT COUNT(*) FROM RESERVA_HABITACION WHERE reserva_id = :res_prueba) AS lineas_despues,
+  3         CASE WHEN :lineas_antes = (SELECT COUNT(*) FROM RESERVA_HABITACION WHERE reserva_id = :res_prueba)
+  4              THEN 'OK: la sentencia se deshizo completa' ELSE 'FALLO' END AS resultado
+  5  FROM dual;
+
+LINEAS_ANTES LINEAS_DESPUES RESULTADO                           
+------------ -------------- ------------------------------------
+           1              1 OK: la sentencia se deshizo completa
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P6.7 INSERT ... SELECT de varias filas SIN solape -> se aceptan las dos =====
+===== P6.7 INSERT ... SELECT de varias filas SIN solape -> se aceptan las dos =====
+SQL> BEGIN
+  2      INSERT INTO RESERVA_HABITACION (reserva_id, habitacion_id, fecha_checkin, fecha_checkout, num_huespedes)
+  3      SELECT :res_prueba, :hab2, DATE '2026-12-03', DATE '2026-12-05', 1 FROM dual UNION ALL
+  4      SELECT :res_prueba, :hab2, DATE '2026-12-05', DATE '2026-12-07', 1 FROM dual;
+  5      DBMS_OUTPUT.PUT_LINE('OK  ' || SQL%ROWCOUNT || ' lineas insertadas con INSERT ... SELECT (sin ORA-04091)');
+  6  END;
+  7  /
+OK  2 lineas insertadas con INSERT ... SELECT (sin ORA-04091)
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P6.8 Dos lineas NUEVAS que se cruzan entre si en la misma sentencia -> ORA-20011 =====
+===== P6.8 Dos lineas NUEVAS que se cruzan entre si en la misma sentencia -> ORA-20011 =====
+SQL> BEGIN
+  2      INSERT INTO RESERVA_HABITACION (reserva_id, habitacion_id, fecha_checkin, fecha_checkout, num_huespedes)
+  3      SELECT :res_prueba, :hab_otro, DATE '2026-12-01', DATE '2026-12-04', 1 FROM dual UNION ALL
+  4      SELECT :res_prueba, :hab_otro, DATE '2026-12-03', DATE '2026-12-06', 1 FROM dual;
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: entraron dos lineas cruzadas');
+  6  EXCEPTION
+  7      WHEN OTHERS THEN
+  8          IF SQLCODE = -20011 THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  9          ELSE DBMS_OUTPUT.PUT_LINE('FALLO: error inesperado ' || SQLERRM); END IF;
+ 10  END;
+ 11  /
+OK  -> ORA-20011: Solape de reservas: la habitacion 26 ya esta ocupada por la reserva 25006 (03/12/2026 - 06/12/2026) y la linea pide 01/12/2026 - 04/12/2026.
+ORA-06512: en "TURISMOUQ.TRG_RESHAB_NO_SOLAPE", línea 44
+ORA-04088: error durante la ejecución del disparador 'TURISMOUQ.TRG_RESHAB_NO_SOLAPE'
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P6.9 UPDATE que mueve una linea encima de otra reserva -> ORA-20011 =====
+===== P6.9 UPDATE que mueve una linea encima de otra reserva -> ORA-20011 =====
+SQL> -- La linea 05/12-07/12 (P6.4) se adelanta al 04/12: choca con la reserva de P2.7 (03/12-05/12)
+SQL> BEGIN
+  2      UPDATE RESERVA_HABITACION
+  3      SET    fecha_checkin = DATE '2026-12-04'
+  4      WHERE  reserva_id = :res_prueba AND habitacion_id = :hab_libre AND fecha_checkin = DATE '2026-12-05';
+  5      DBMS_OUTPUT.PUT_LINE('FALLO: el UPDATE dejo un solape');
+  6  EXCEPTION
+  7      WHEN OTHERS THEN
+  8          IF SQLCODE = -20011 THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  9          ELSE DBMS_OUTPUT.PUT_LINE('FALLO: error inesperado ' || SQLERRM); END IF;
+ 10  END;
+ 11  /
+OK  -> ORA-20011: Solape de reservas: la habitacion 8 ya esta ocupada por la reserva 25005 (03/12/2026 - 05/12/2026) y la linea pide 04/12/2026 - 07/12/2026.
+ORA-06512: en "TURISMOUQ.TRG_RESHAB_NO_SOLAPE", línea 44
+ORA-04088: error durante la ejecución del disparador 'TURISMOUQ.TRG_RESHAB_NO_SOLAPE'
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P6.10 UPDATE a fechas libres -> se acepta =====
+===== P6.10 UPDATE a fechas libres -> se acepta =====
+SQL> BEGIN
+  2      UPDATE RESERVA_HABITACION
+  3      SET    fecha_checkout = DATE '2026-12-09'
+  4      WHERE  reserva_id = :res_prueba AND habitacion_id = :hab_libre AND fecha_checkin = DATE '2026-12-05';
+  5      DBMS_OUTPUT.PUT_LINE('OK  ' || SQL%ROWCOUNT || ' linea extendida hasta el 09/12 sin solape');
+  6  END;
+  7  /
+OK  1 linea extendida hasta el 09/12 sin solape
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> -- Se deshacen todas las filas de prueba de P6
+SQL> ROLLBACK;
+Rollback terminado.
+SQL> 
+SQL> PROMPT ===== P6.7 Disparadores creados =====
+===== P6.7 Disparadores creados =====
+SQL> SELECT trigger_name, trigger_type, triggering_event, table_name, status
+  2  FROM   user_triggers
+  3  ORDER BY table_name;
+
+TRIGGER_NAME                                                                                                                     TRIGGER_TYPE
+-------------------------------------------------------------------------------------------------------------------------------- ----------------
+TRIGGERING_EVENT
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+TABLE_NAME                                                                                                                       STATUS  
+-------------------------------------------------------------------------------------------------------------------------------- --------
+TRG_RESENA_VALIDA                                                                                                                BEFORE EACH ROW  
+INSERT OR UPDATE                                                                                                                                                                                                            
+RESENA                                                                                                                           ENABLED 
+
+TRG_RESHAB_NO_SOLAPE                                                                                                             COMPOUND         
+INSERT OR UPDATE                                                                                                                                                                                                            
+RESERVA_HABITACION                                                                                                               ENABLED 
+
+TRG_TARIFA_AUDITORIA                                                                                                             COMPOUND         
+INSERT OR UPDATE OR DELETE                                                                                                                                                                                                  
+TARIFA                                                                                                                           ENABLED 
+
+TRG_TEMPORADA_SIN_CRUCE                                                                                                          AFTER STATEMENT  
+INSERT OR UPDATE                                                                                                                                                                                                            
+TEMPORADA                                                                                                                        ENABLED 
+
+
+4 filas seleccionadas. 
+
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P7. TABLESPACE
+SQL> -- ============================================================================
+SQL> PROMPT ===== P7.1 Tablespace propio =====
+===== P7.1 Tablespace propio =====
+SQL> SELECT tablespace_name, status, contents, extent_management, segment_space_management
+  2  FROM   user_tablespaces
+  3  WHERE  tablespace_name = 'TS_TURISMO_HISTORICO';
+
+TABLESPACE_NAME                STATUS    CONTENTS              EXTENT_MAN SEGMEN
+------------------------------ --------- --------------------- ---------- ------
+TS_TURISMO_HISTORICO           ONLINE    PERMANENT             LOCAL      AUTO  
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P7.2 Segmentos dentro del tablespace (tabla historica y su indice) vs RESERVA =====
+===== P7.2 Segmentos dentro del tablespace (tabla historica y su indice) vs RESERVA =====
+SQL> SELECT segment_name, segment_type, tablespace_name, ROUND(bytes / 1024 / 1024, 2) AS mb
+  2  FROM   user_segments
+  3  WHERE  segment_name IN ('RESERVA', 'RESERVA_HISTORICO', 'PK_RESERVA_HISTORICO')
+  4  ORDER BY tablespace_name, segment_name;
+
+SEGMENT_NAME                                                                                                                     SEGMENT_TYPE       TABLESPACE_NAME                        MB
+-------------------------------------------------------------------------------------------------------------------------------- ------------------ ------------------------------ ----------
+PK_RESERVA_HISTORICO                                                                                                             INDEX              TS_TURISMO_HISTORICO           ,38       
+RESERVA_HISTORICO                                                                                                                TABLE              TS_TURISMO_HISTORICO                    2
+RESERVA                                                                                                                          TABLE              USERS                                   2
+
+3 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P7.3 Contenido del historico =====
+===== P7.3 Contenido del historico =====
+SQL> SELECT estado, COUNT(*) AS reservas, MIN(fecha_checkin) AS desde, MAX(fecha_checkout) AS hasta,
+  2         SUM(total_pagado) AS total_pagado
+  3  FROM   RESERVA_HISTORICO
+  4  GROUP BY estado;
+
+ESTADO            RESERVAS DESDE      HASTA      TOTAL_PAGADO
+--------------- ---------- ---------- ---------- ------------
+COMPLETADA           13672 01/01/2024 31/12/2025   1.1521E+10
+CANCELADA             3740 01/01/2024 31/12/2025    398951780
+
+2 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P7.4 Archivar de nuevo no duplica (debe archivar 0) =====
+===== P7.4 Archivar de nuevo no duplica (debe archivar 0) =====
+SQL> EXEC sp_archivar_reservas(DATE '2026-01-01');
+Reservas archivadas en RESERVA_HISTORICO: 0
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P7.5 Datafile (requiere acceso a DBA_DATA_FILES) =====
+===== P7.5 Datafile (requiere acceso a DBA_DATA_FILES) =====
+SQL> DECLARE
+  2      v_archivo VARCHAR2(600);
+  3      v_mb      NUMBER;
+  4      v_auto    VARCHAR2(3);
+  5  BEGIN
+  6      EXECUTE IMMEDIATE q'[SELECT file_name, ROUND(bytes/1024/1024), autoextensible
+  7                           FROM dba_data_files WHERE tablespace_name = 'TS_TURISMO_HISTORICO'
+  8                           AND ROWNUM = 1]'
+  9          INTO v_archivo, v_mb, v_auto;
+ 10      DBMS_OUTPUT.PUT_LINE('Datafile: ' || v_archivo || '  ' || v_mb || ' MB  autoextend=' || v_auto);
+ 11  EXCEPTION
+ 12      WHEN OTHERS THEN DBMS_OUTPUT.PUT_LINE('Sin acceso a DBA_DATA_FILES: ' || SQLERRM);
+ 13  END;
+ 14  /
+Datafile: /opt/oracle/oradata/FREE/FREEPDB1/ts_turismo_historico01.dbf  50 MB  autoextend=YES
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P8. VISTA MATERIALIZADA DE OCUPACION MENSUAL
+SQL> -- ============================================================================
+SQL> PROMPT ===== P8.1 Definicion y ultimo refresco =====
+===== P8.1 Definicion y ultimo refresco =====
+SQL> SELECT mview_name, refresh_mode, refresh_method, build_mode, last_refresh_type,
+  2         TO_CHAR(last_refresh_date, 'DD/MM/YYYY HH24:MI:SS') AS ultimo_refresco
+  3  FROM   user_mviews
+  4  WHERE  mview_name = 'MV_OCUPACION_MENSUAL';
+
+MVIEW_NAME                                                                                                                       REFRESH_M REFRESH_ BUILD_MOD LAST_REF ULTIMO_REFRESCO    
+-------------------------------------------------------------------------------------------------------------------------------- --------- -------- --------- -------- -------------------
+MV_OCUPACION_MENSUAL                                                                                                             DEMAND    COMPLETE IMMEDIATE COMPLETE 20/11/2026 03:50:52
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> SELECT COUNT(*) AS filas, MIN(anio * 100 + mes) AS primer_mes, MAX(anio * 100 + mes) AS ultimo_mes
+  2  FROM   MV_OCUPACION_MENSUAL;
+
+     FILAS PRIMER_MES ULTIMO_MES
+---------- ---------- ----------
+      2220     202401     202701
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P8.2 Ocupacion 2025 por municipio (se lee de la vista, sin recalcular) =====
+===== P8.2 Ocupacion 2025 por municipio (se lee de la vista, sin recalcular) =====
+SQL> SELECT municipio,
+  2         SUM(noches_vendidas)    AS noches_vendidas,
+  3         SUM(noches_disponibles) AS noches_disponibles,
+  4         ROUND(100 * SUM(noches_vendidas) / SUM(noches_disponibles), 2) AS pct_ocupacion
+  5  FROM   MV_OCUPACION_MENSUAL
+  6  WHERE  anio = 2025
+  7  GROUP BY municipio
+  8  ORDER BY pct_ocupacion DESC;
+
+MUNICIPIO                                                                                            NOCHES_VENDIDAS NOCHES_DISPONIBLES PCT_OCUPACION
+---------------------------------------------------------------------------------------------------- --------------- ------------------ -------------
+Buenavista                                                                                                       179               1095         16,35
+Cordoba                                                                                                          336               2555         13,15
+Filandia                                                                                                        3183              26645         11,95
+Genova                                                                                                           448               4015         11,16
+La Tebaida                                                                                                      2681              24090         11,13
+Quimbaya                                                                                                        2550              22995         11,09
+Calarca                                                                                                         6526              59130         11,04
+Salento                                                                                                         4325              39785         10,87
+Armenia                                                                                                        12613             116800          10,8
+Montenegro                                                                                                      1230              11680         10,53
+Circasia                                                                                                        1129              10950         10,31
+Pijao                                                                                                            213               2555          8,34
+
+12 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P8.3 Ocupacion mensual 2025 (estacionalidad) =====
+===== P8.3 Ocupacion mensual 2025 (estacionalidad) =====
+SQL> SELECT mes, SUM(noches_vendidas) AS noches_vendidas,
+  2         ROUND(100 * SUM(noches_vendidas) / SUM(noches_disponibles), 2) AS pct_ocupacion
+  3  FROM   MV_OCUPACION_MENSUAL
+  4  WHERE  anio = 2025
+  5  GROUP BY mes
+  6  ORDER BY mes;
+
+       MES NOCHES_VENDIDAS PCT_OCUPACION
+---------- --------------- -------------
+         1            4601         16,81
+         2            2225             9
+         3            2353           8,6
+         4            3518         13,28
+         5            2116          7,73
+         6            3455         13,04
+         7            3874         14,15
+         8            2271           8,3
+         9            1763          6,66
+        10            2192          8,01
+        11            1771          6,69
+        12            5274         19,27
+
+12 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P8.4 La vista es correcta: comparada contra el calculo en vivo de 2025 (diferencias = 0) =====
+===== P8.4 La vista es correcta: comparada contra el calculo en vivo de 2025 (diferencias = 0) =====
+SQL> SELECT COUNT(*) AS meses_comparados,
+  2         SUM(CASE WHEN mv.noches <> vivo.noches THEN 1 ELSE 0 END) AS diferencias
+  3  FROM  (SELECT mes, SUM(noches_vendidas) AS noches
+  4         FROM   MV_OCUPACION_MENSUAL WHERE anio = 2025 GROUP BY mes) mv
+  5  JOIN  (SELECT c.mes, COUNT(*) AS noches
+  6         FROM   RESERVA_HABITACION rh
+  7         JOIN   RESERVA r    ON r.reserva_id = rh.reserva_id
+  8         JOIN   CALENDARIO c ON c.fecha >= rh.fecha_checkin AND c.fecha < rh.fecha_checkout
+  9         WHERE  r.estado IN ('CONFIRMADA', 'COMPLETADA') AND c.anio = 2025
+ 10         GROUP BY c.mes) vivo ON vivo.mes = mv.mes;
+
+MESES_COMPARADOS DIFERENCIAS
+---------------- -----------
+              12           0
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P8.5 Politica ON DEMAND: la reserva confirmada de P2 aun NO aparece en la vista =====
+===== P8.5 Politica ON DEMAND: la reserva confirmada de P2 aun NO aparece en la vista =====
+SQL> SELECT (SELECT noches_vendidas FROM MV_OCUPACION_MENSUAL
+  2          WHERE alojamiento_id = :aloj_libre AND anio = 2026 AND mes = 11) AS noches_en_vista,
+  3         (SELECT COUNT(*)
+  4          FROM   RESERVA_HABITACION rh
+  5          JOIN   RESERVA r    ON r.reserva_id = rh.reserva_id
+  6          JOIN   HABITACION h ON h.habitacion_id = rh.habitacion_id
+  7          JOIN   CALENDARIO c ON c.fecha >= rh.fecha_checkin AND c.fecha < rh.fecha_checkout
+  8          WHERE  r.estado IN ('CONFIRMADA', 'COMPLETADA')
+  9          AND    h.alojamiento_id = :aloj_libre AND c.anio = 2026 AND c.mes = 11) AS noches_en_vivo
+ 10  FROM dual;
+
+NOCHES_EN_VISTA NOCHES_EN_VIVO
+--------------- --------------
+             16             21
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P8.6 Refresco manual (el mismo que ejecuta el job cada noche) =====
+===== P8.6 Refresco manual (el mismo que ejecuta el job cada noche) =====
+SQL> EXEC DBMS_MVIEW.REFRESH('MV_OCUPACION_MENSUAL', 'C');
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> SELECT (SELECT noches_vendidas FROM MV_OCUPACION_MENSUAL
+  2          WHERE alojamiento_id = :aloj_libre AND anio = 2026 AND mes = 11) AS noches_en_vista_despues,
+  3         TO_CHAR((SELECT last_refresh_date FROM user_mviews WHERE mview_name = 'MV_OCUPACION_MENSUAL'),
+  4                 'DD/MM/YYYY HH24:MI:SS') AS ultimo_refresco
+  5  FROM dual;
+
+NOCHES_EN_VISTA_DESPUES ULTIMO_REFRESCO    
+----------------------- -------------------
+                     21 20/11/2026 03:52:11
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P8.7 Job de refresco nocturno =====
+===== P8.7 Job de refresco nocturno =====
+SQL> SELECT job_name, enabled, state, repeat_interval,
+  2         TO_CHAR(next_run_date, 'DD/MM/YYYY HH24:MI') AS proxima_ejecucion
+  3  FROM   user_scheduler_jobs
+  4  WHERE  job_name = 'JOB_REFRESCO_MV_OCUPACION';
+
+JOB_NAME                                                                                                                         ENABL STATE
+-------------------------------------------------------------------------------------------------------------------------------- ----- --------------------
+REPEAT_INTERVAL
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+PROXIMA_EJECUCIO
+----------------
+JOB_REFRESCO_MV_OCUPACION                                                                                                        TRUE  SCHEDULED            
+FREQ=DAILY;BYHOUR=2;BYMINUTE=0;BYSECOND=0                                                                                                                                                                                   
+21/11/2026 02:00
+
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P9. REGLAS DE NEGOCIO EN EL MOTOR
+SQL> -- ============================================================================
+SQL> PROMPT ===== P9.1 RN1 Reembolso: cancelar con MAS de 5 dias -> se devuelve el 80 % =====
+===== P9.1 RN1 Reembolso: cancelar con MAS de 5 dias -> se devuelve el 80 % =====
+SQL> VARIABLE res_rn NUMBER
+SQL> VARIABLE val_rn NUMBER
+SQL> VARIABLE reemb  NUMBER
+SQL> BEGIN
+  2      -- reserva del cliente de pruebas con un anticipo exitoso de 100.000
+  3      pkg_turismo.sp_crear_reserva(:cli, :hab_otro, DATE '2026-12-08', DATE '2026-12-10', 1, :res_rn, :val_rn);
+  4      INSERT INTO PAGO (reserva_id, fecha_pago, monto, metodo, estado)
+  5      VALUES (:res_rn, DATE '2026-12-01', 100000, 'PSE', 'EXITOSO');
+  6      -- se cancela el 28/11: faltan 10 dias para el check-in (08/12)
+  7      pkg_turismo.sp_cancelar_reserva(:res_rn, :reemb, DATE '2026-11-28');
+  8      DBMS_OUTPUT.PUT_LINE(CASE WHEN :reemb = 80000 THEN 'OK  ' ELSE 'FALLO ' END ||
+  9          'cancelada con 10 dias de anticipacion: reembolso = ' || :reemb || ' (80 % de 100.000)');
+ 10  END;
+ 11  /
+OK  cancelada con 10 dias de anticipacion: reembolso = 80000 (80 % de 100.000)
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> SELECT r.reserva_id, r.estado, r.fecha_checkin, r.fecha_cancelacion, p.monto, p.estado AS estado_pago,
+  2         pkg_turismo.fn_total_pagado(r.reserva_id) AS retenido
+  3  FROM   RESERVA r JOIN PAGO p ON p.reserva_id = r.reserva_id
+  4  WHERE  r.reserva_id = :res_rn ORDER BY p.pago_id;
+
+RESERVA_ID ESTADO          FECHA_CHEC FECHA_CANC      MONTO ESTADO_PAGO       RETENIDO
+---------- --------------- ---------- ---------- ---------- --------------- ----------
+     25008 CANCELADA       08/12/2026 28/11/2026     100000 EXITOSO              20000
+     25008 CANCELADA       08/12/2026 28/11/2026      80000 REEMBOLSADO          20000
+
+2 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P9.2 RN1 Reembolso: cancelar con 5 dias o menos -> no se devuelve nada =====
+===== P9.2 RN1 Reembolso: cancelar con 5 dias o menos -> no se devuelve nada =====
+SQL> BEGIN
+  2      pkg_turismo.sp_crear_reserva(:cli, :hab_otro, DATE '2026-12-11', DATE '2026-12-13', 1, :res_rn, :val_rn);
+  3      INSERT INTO PAGO (reserva_id, fecha_pago, monto, metodo, estado)
+  4      VALUES (:res_rn, DATE '2026-12-01', 100000, 'PSE', 'EXITOSO');
+  5      -- se cancela el 06/12: faltan exactamente 5 dias para el check-in (11/12)
+  6      pkg_turismo.sp_cancelar_reserva(:res_rn, :reemb, DATE '2026-12-06');
+  7      DBMS_OUTPUT.PUT_LINE(CASE WHEN :reemb = 0 THEN 'OK  ' ELSE 'FALLO ' END ||
+  8          'cancelada con 5 dias de anticipacion: reembolso = ' || :reemb);
+  9  END;
+ 10  /
+OK  cancelada con 5 dias de anticipacion: reembolso = 0
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P9.3 RN1 No se puede cancelar dos veces (-20012) =====
+===== P9.3 RN1 No se puede cancelar dos veces (-20012) =====
+SQL> BEGIN
+  2      pkg_turismo.sp_cancelar_reserva(:res_rn, :reemb, DATE '2026-12-06');
+  3      DBMS_OUTPUT.PUT_LINE('FALLO: se cancelo dos veces');
+  4  EXCEPTION
+  5      WHEN pkg_turismo.e_parametro_invalido THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  6  END;
+  7  /
+OK  -> ORA-20012: No se puede cancelar una reserva CANCELADA.
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P9.4 RN6 Reserva pagada solo si lo pagado cubre estadia + servicios =====
+===== P9.4 RN6 Reserva pagada solo si lo pagado cubre estadia + servicios =====
+SQL> SELECT r.reserva_id, r.estado,
+  2         pkg_turismo.fn_valor_reserva(r.reserva_id) AS valor_total,
+  3         pkg_turismo.fn_total_pagado(r.reserva_id)  AS pagado,
+  4         pkg_turismo.fn_reserva_pagada(r.reserva_id) AS pagada
+  5  FROM   RESERVA r
+  6  WHERE  r.reserva_id IN (:res1, :res2);
+
+RESERVA_ID ESTADO          VALOR_TOTAL     PAGADO
+---------- --------------- ----------- ----------
+PAGADA                                                                                                                                                                                                                      
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+     25004 CONFIRMADA          1879000          0 
+N                                                                                                                                                                                                                           
+
+     25005 PENDIENTE            510000          0 
+N                                                                                                                                                                                                                           
+
+
+2 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== P9.5 RN2 Resena de una reserva que NO esta completada -> ORA-20013 =====
+===== P9.5 RN2 Resena de una reserva que NO esta completada -> ORA-20013 =====
+SQL> DECLARE
+  2      v_aloj NUMBER;
+  3  BEGIN
+  4      SELECT alojamiento_id INTO v_aloj FROM HABITACION WHERE habitacion_id = :hab_libre;
+  5      INSERT INTO RESENA (cliente_id, alojamiento_id, reserva_id, calificacion, comentario)
+  6      VALUES (:cli, v_aloj, :res1, 5, 'Resena antes de hospedarse');
+  7      DBMS_OUTPUT.PUT_LINE('FALLO: se acepto la resena');
+  8  EXCEPTION
+  9      WHEN OTHERS THEN
+ 10          IF SQLCODE = -20013 THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+ 11          ELSE DBMS_OUTPUT.PUT_LINE('FALLO: error inesperado ' || SQLERRM); END IF;
+ 12  END;
+ 13  /
+OK  -> ORA-20013: Resena rechazada: la reserva 25004 esta CONFIRMADA; solo se resenan estadias completadas.
+ORA-06512: en "TURISMOUQ.TRG_RESENA_VALIDA", línea 15
+ORA-04088: error durante la ejecución del disparador 'TURISMOUQ.TRG_RESENA_VALIDA'
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P9.6 RN2 Resena de una reserva completada pero de OTRO alojamiento -> ORA-20013 =====
+===== P9.6 RN2 Resena de una reserva completada pero de OTRO alojamiento -> ORA-20013 =====
+SQL> DECLARE
+  2      v_res  NUMBER;
+  3      v_cli  NUMBER;
+  4      v_aloj NUMBER;
+  5  BEGIN
+  6      -- una reserva completada sin resena, y un alojamiento donde NO se hospedo
+  7      SELECT r.reserva_id, r.cliente_id INTO v_res, v_cli
+  8        FROM RESERVA r
+  9       WHERE r.estado = 'COMPLETADA'
+ 10         AND NOT EXISTS (SELECT 1 FROM RESENA x WHERE x.reserva_id = r.reserva_id)
+ 11         AND ROWNUM = 1;
+ 12      SELECT MIN(a.alojamiento_id) INTO v_aloj
+ 13        FROM ALOJAMIENTO a
+ 14       WHERE a.alojamiento_id NOT IN (SELECT h.alojamiento_id FROM RESERVA_HABITACION rh
+ 15                                       JOIN HABITACION h ON h.habitacion_id = rh.habitacion_id
+ 16                                      WHERE rh.reserva_id = v_res);
+ 17      INSERT INTO RESENA (cliente_id, alojamiento_id, reserva_id, calificacion)
+ 18      VALUES (v_cli, v_aloj, v_res, 4);
+ 19      DBMS_OUTPUT.PUT_LINE('FALLO: se acepto la resena');
+ 20  EXCEPTION
+ 21      WHEN OTHERS THEN
+ 22          IF SQLCODE = -20013 THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+ 23          ELSE DBMS_OUTPUT.PUT_LINE('FALLO: error inesperado ' || SQLERRM); END IF;
+ 24  END;
+ 25  /
+OK  -> ORA-20013: Resena rechazada: en la reserva 302 el cliente no se hospedo en el alojamiento 1.
+ORA-06512: en "TURISMOUQ.TRG_RESENA_VALIDA", línea 29
+ORA-04088: error durante la ejecución del disparador 'TURISMOUQ.TRG_RESENA_VALIDA'
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P9.7 RN2 Resena valida (completada, mismo cliente y alojamiento) -> se acepta =====
+===== P9.7 RN2 Resena valida (completada, mismo cliente y alojamiento) -> se acepta =====
+SQL> DECLARE
+  2      v_res  NUMBER;
+  3      v_cli  NUMBER;
+  4      v_aloj NUMBER;
+  5  BEGIN
+  6      SELECT r.reserva_id, r.cliente_id, MIN(h.alojamiento_id) INTO v_res, v_cli, v_aloj
+  7        FROM RESERVA r
+  8        JOIN RESERVA_HABITACION rh ON rh.reserva_id = r.reserva_id
+  9        JOIN HABITACION h ON h.habitacion_id = rh.habitacion_id
+ 10       WHERE r.estado = 'COMPLETADA'
+ 11         AND NOT EXISTS (SELECT 1 FROM RESENA x WHERE x.reserva_id = r.reserva_id)
+ 12         AND ROWNUM = 1
+ 13       GROUP BY r.reserva_id, r.cliente_id;
+ 14      INSERT INTO RESENA (cliente_id, alojamiento_id, reserva_id, calificacion, comentario)
+ 15      VALUES (v_cli, v_aloj, v_res, 5, 'Prueba de resena valida');
+ 16      DBMS_OUTPUT.PUT_LINE('OK  resena aceptada para la reserva completada ' || v_res);
+ 17      ROLLBACK;   -- la resena de prueba no se conserva
+ 18  END;
+ 19  /
+OK  resena aceptada para la reserva completada 2
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== P9.8 RN7 Temporada que se cruza con otra -> ORA-20014 =====
+===== P9.8 RN7 Temporada que se cruza con otra -> ORA-20014 =====
+SQL> BEGIN
+  2      INSERT INTO TEMPORADA (nombre, categoria, anio, fecha_inicio, fecha_fin)
+  3      VALUES ('Puente festivo prueba', 'ALTA', 2026, DATE '2026-11-14', DATE '2026-11-16');
+  4      DBMS_OUTPUT.PUT_LINE('FALLO: se acepto una temporada cruzada');
+  5  EXCEPTION
+  6      WHEN OTHERS THEN
+  7          IF SQLCODE = -20014 THEN DBMS_OUTPUT.PUT_LINE('OK  -> ' || SQLERRM);
+  8          ELSE DBMS_OUTPUT.PUT_LINE('FALLO: error inesperado ' || SQLERRM); END IF;
+  9  END;
+ 10  /
+OK  -> ORA-20014: Temporadas cruzadas: "Temporada media III 2026" y "Puente festivo prueba 2026" comparten al menos un dia.
+ORA-06512: en "TURISMOUQ.TRG_TEMPORADA_SIN_CRUCE", línea 13
+ORA-04088: error durante la ejecución del disparador 'TURISMOUQ.TRG_TEMPORADA_SIN_CRUCE'
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> COMMIT;
+Confirmación terminada.
+SQL> 
+SQL> -- ============================================================================
+SQL> -- P10. ENTREGA 3 VISTA DESDE EL DUENO DEL ESQUEMA
+SQL> -- (las demostraciones completas estan en 07, 08, 09, 11 a 15 y demo/)
+SQL> -- ============================================================================
+SQL> PROMPT ===== P10.1 Transaccion atomica: un pago rechazado deja la reserva PENDIENTE =====
+===== P10.1 Transaccion atomica: un pago rechazado deja la reserva PENDIENTE =====
+SQL> VARIABLE res_tx NUMBER
+SQL> VARIABLE est_tx VARCHAR2(15)
+SQL> BEGIN
+  2      sp_reservar_y_pagar(:cli, :hab_otro, DATE '2026-12-13', DATE '2026-12-15', 1,
+  3                          50000, 'PSE', :res_tx, :est_tx, p_simular_rechazo => TRUE);
+  4      DBMS_OUTPUT.PUT_LINE(CASE WHEN :est_tx = 'PENDIENTE' THEN 'OK  ' ELSE 'FALLO ' END ||
+  5          'reserva ' || :res_tx || ' quedo ' || :est_tx || ' (el pago se deshizo con ROLLBACK TO SAVEPOINT)');
+  6  END;
+  7  /
+Pago deshecho con ROLLBACK TO sp_reserva_creada: ORA-20021: La pasarela de pagos rechazo la transaccion.
+OK  reserva 25010 quedo PENDIENTE (el pago se deshizo con ROLLBACK TO SAVEPOINT)
+
+Procedimiento PL/SQL terminado correctamente.
+SQL> SELECT p.monto, p.metodo, p.estado FROM PAGO p WHERE p.reserva_id = :res_tx;
+
+     MONTO METODO               ESTADO         
+---------- -------------------- ---------------
+     50000 PSE                  FALLIDO        
+
+1 fila seleccionada. 
+
+SQL> 
+SQL> PROMPT ===== P10.2 Indices creados en 08 =====
+===== P10.2 Indices creados en 08 =====
+SQL> SELECT index_name, index_type, table_name,
+  2         (SELECT LISTAGG(NVL(e.column_expression, c.column_name), ', ') WITHIN GROUP (ORDER BY c.column_position)
+  3            FROM user_ind_columns c
+  4            LEFT JOIN user_ind_expressions e ON e.index_name = c.index_name AND e.column_position = c.column_position
+  5           WHERE c.index_name = i.index_name) AS columnas
+  6  FROM   user_indexes i
+  7  WHERE  index_name IN ('IX_RESERVA_CLIENTE_ESTADO','IX_RESERVA_MES_CHECKIN','IX_PAGO_RESERVA')
+  8  ORDER BY index_name;
+
+Error que empieza en la línea: 952 del comando -
+SELECT index_name, index_type, table_name,
+       (SELECT LISTAGG(NVL(e.column_expression, c.column_name), ', ') WITHIN GROUP (ORDER BY c.column_position)
+          FROM user_ind_columns c
+          LEFT JOIN user_ind_expressions e ON e.index_name = c.index_name AND e.column_position = c.column_position
+         WHERE c.index_name = i.index_name) AS columnas
+FROM   user_indexes i
+WHERE  index_name IN ('IX_RESERVA_CLIENTE_ESTADO','IX_RESERVA_MES_CHECKIN','IX_PAGO_RESERVA')
+ORDER BY index_name
+Error en la línea de comandos : 953 Columna : 49
+Informe de error -
+Error SQL: ORA-00932: La expresión  tiene el tipo de dato CHAR, que es incompatible con el tipo de dato esperado LONG
+
+https://docs.oracle.com/error-help/db/ora-00932/00932. 00000 -  "expression%s is of data type %s, which is incompatible with expected data type %s"
+*Cause:    The input data type for this SQL operation was incompatible with
+           the expected data type.
+*Action:   Modify the expression to have a compatible data type for the
+           SQL operation.
+*Params:   1) failed_expression
+           type.
+           2) expression_data_type: The data type of the column or expression.
+           3) expected_data_type: The data type expected by the SQL operation.
+
+More Details :
+https://docs.oracle.com/error-help/db/ora-00932/
+SQL> 
+SQL> PROMPT ===== P10.3 Privilegios que este esquema dio a los roles (09) =====
+===== P10.3 Privilegios que este esquema dio a los roles (09) =====
+SQL> SELECT grantee AS rol, table_name AS objeto, privilege
+  2  FROM   user_tab_privs_made
+  3  WHERE  grantee LIKE 'R\_%' ESCAPE '\'
+  4  ORDER BY grantee, table_name;
+
+ROL
+--------------------------------------------------------------------------------------------------------------------------------
+OBJETO                                                                                                                           PRIVILEGE                               
+-------------------------------------------------------------------------------------------------------------------------------- ----------------------------------------
+R_ADMIN_ALOJAMIENTO                                                                                                              
+V_ADMIN_MIS_RESERVAS                                                                                                             SELECT                                  
+
+R_ADMIN_ALOJAMIENTO                                                                                                              
+V_ADMIN_MIS_TARIFAS                                                                                                              SELECT                                  
+
+R_AUDITOR                                                                                                                        
+AUDITORIA_TARIFA                                                                                                                 SELECT                                  
+
+R_AUDITOR                                                                                                                        
+V_AUDITORIA_TARIFAS                                                                                                              SELECT                                  
+
+R_GERENTE                                                                                                                        
+LIQUIDACION_MENSUAL                                                                                                              SELECT                                  
+
+R_GERENTE                                                                                                                        
+MV_OCUPACION_MENSUAL                                                                                                             SELECT                                  
+
+R_GERENTE                                                                                                                        
+RESERVA_HISTORICO                                                                                                                SELECT                                  
+
+R_GERENTE                                                                                                                        
+V_GERENCIA_INGRESOS_MES                                                                                                          SELECT                                  
+
+R_RECEPCION                                                                                                                      
+SP_RESERVAR_Y_PAGAR                                                                                                              EXECUTE                                 
+
+R_RECEPCION                                                                                                                      
+V_RECEPCION_CLIENTES                                                                                                             SELECT                                  
+
+R_RECEPCION                                                                                                                      
+V_RECEPCION_HABITACIONES                                                                                                         SELECT                                  
+
+R_RECEPCION                                                                                                                      
+V_RECEPCION_OCUPACION                                                                                                            SELECT                                  
+
+R_RECEPCION                                                                                                                      
+V_RECEPCION_RESERVAS                                                                                                             SELECT                                  
+
+
+13 filas seleccionadas. 
+
+SQL> 
+SQL> -- ============================================================================
+SQL> -- PF. LIMPIEZA Y VERIFICACION FINAL: la base debe quedar igual que al inicio
+SQL> -- ============================================================================
+SQL> PROMPT ===== PF.1 Se borra todo lo que crearon las pruebas =====
+===== PF.1 Se borra todo lo que crearon las pruebas =====
+SQL> BEGIN
+  2      DELETE FROM PAGO WHERE reserva_id IN (SELECT reserva_id FROM RESERVA WHERE cliente_id = :cli);
+  3      DELETE FROM RESERVA_HABITACION WHERE reserva_id IN (SELECT reserva_id FROM RESERVA WHERE cliente_id = :cli);
+  4      DELETE FROM RESERVA WHERE cliente_id = :cli;
+  5      DELETE FROM CLIENTE WHERE cliente_id = :cli;
+  6      COMMIT;
+  7      -- la vista materializada vuelve a reflejar la base sin las reservas de prueba
+  8      DBMS_MVIEW.REFRESH('MV_OCUPACION_MENSUAL', 'C');
+  9  END;
+ 10  /
+Procedimiento PL/SQL terminado correctamente.
+SQL> 
+SQL> PROMPT ===== PF.2 Comparacion con el estado inicial (todo debe decir OK) =====
+===== PF.2 Comparacion con el estado inicial (todo debe decir OK) =====
+SQL> SELECT 'Suma de tarifas' AS dato, :ini_tarifas AS inicio, (SELECT SUM(precio_noche) FROM TARIFA) AS final,
+  2         CASE WHEN :ini_tarifas = (SELECT SUM(precio_noche) FROM TARIFA) THEN 'OK' ELSE 'FALLO' END AS resultado FROM dual
+  3  UNION ALL
+  4  SELECT 'Reservas', :ini_reservas, (SELECT COUNT(*) FROM RESERVA),
+  5         CASE WHEN :ini_reservas = (SELECT COUNT(*) FROM RESERVA) THEN 'OK' ELSE 'FALLO' END FROM dual
+  6  UNION ALL
+  7  SELECT 'Lineas de reserva', :ini_lineas, (SELECT COUNT(*) FROM RESERVA_HABITACION),
+  8         CASE WHEN :ini_lineas = (SELECT COUNT(*) FROM RESERVA_HABITACION) THEN 'OK' ELSE 'FALLO' END FROM dual
+  9  UNION ALL
+ 10  SELECT 'Pagos', :ini_pagos, (SELECT COUNT(*) FROM PAGO),
+ 11         CASE WHEN :ini_pagos = (SELECT COUNT(*) FROM PAGO) THEN 'OK' ELSE 'FALLO' END FROM dual
+ 12  UNION ALL
+ 13  SELECT 'Clientes', :ini_clientes, (SELECT COUNT(*) FROM CLIENTE),
+ 14         CASE WHEN :ini_clientes = (SELECT COUNT(*) FROM CLIENTE) THEN 'OK' ELSE 'FALLO' END FROM dual;
+
+DATO                  INICIO      FINAL RESUL
+----------------- ---------- ---------- -----
+Suma de tarifas   5585097000 5585097000 OK   
+Reservas               25000      25000 OK   
+Lineas de reserva      29973      29973 OK   
+Pagos                  33961      33961 OK   
+Clientes                3001       3001 OK   
+
+5 filas seleccionadas. 
+
+SQL> 
+SQL> PROMPT ===== FIN DE LAS PRUEBAS =====
+===== FIN DE LAS PRUEBAS =====
+SQL> SET ECHO OFF;
